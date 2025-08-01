@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+
+{% block title %}Route Details - {{ route.route_name }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2><i class="fas fa-route"></i> Route: {{ route.route_name }}</h2>
+            <div>
+                {% if route.processing_status == 'completed' %}
+                    <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
+                       class="btn btn-primary">
+                        <i class="fas fa-file-pdf"></i> Generate PDF
+                    </a>
+                {% endif %}
+                <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+                    <i class="fas fa-arrow-left"></i> Back
+                </a>
+            </div>
+        </div>
+        <hr>
+    </div>
+</div>
+
+<!-- Route Information -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0">Route Information</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tr>
+                        <th>From:</th>
+                        <td>{{ route.from_address }} ({{ route.from_code }})</td>
+                    </tr>
+                    <tr>
+                        <th>To:</th>
+                        <td>{{ route.to_address }} ({{ route.to_code }})</td>
+                    </tr>
+                    <tr>
+                        <th>Distance:</th>
+                        <td>{{ route.total_distance }} km</td>
+                    </tr>
+                    <tr>
+                        <th>Duration:</th>
+                        <td>{{ route.estimated_duration }} minutes</td>
+                    </tr>
+                    <tr>
+                        <th>Status:</th>
+                        <td>
+                            <span class="badge bg-{% if route.processing_status == 'completed' %}success{% elif route.processing_status == 'processing' %}primary{% else %}warning{% endif %}">
+                                {{ route.processing_status }}
+                            </span>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0">Risk Assessment</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-sm">
+                    <tr>
+                        <th>Overall Risk:</th>
+                        <td>
+                            <span class="badge bg-{% if route.risk_scores.overall >= 8 %}danger{% elif route.risk_scores.overall >= 6 %}warning{% elif route.risk_scores.overall >= 4 %}info{% else %}success{% endif %}">
+                                {{ route.risk_scores.overall }}/10
+                            </span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>Sharp Turns:</th>
+                        <td>{{ route.risk_scores.sharp_turns }}/10</td>
+                    </tr>
+                    <tr>
+                        <th>Blind Spots:</th>
+                        <td>{{ route.risk_scores.blind_spots }}/10</td>
+                    </tr>
+                    <tr>
+                        <th>Road Conditions:</th>
+                        <td>{{ route.risk_scores.road_conditions }}/10</td>
+                    </tr>
+                    <tr>
+                        <th>Emergency Services:</th>
+                        <td>{{ route.risk_scores.emergency_services }}/10</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Analysis Data Tabs -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <ul class="nav nav-tabs card-header-tabs" id="analysisTab" role="tablist">
+                    <li class="nav-item">
+                        <a class="nav-link active" data-bs-toggle="tab" href="#sharp-turns">
+                            Sharp Turns ({{ analysis_data.sharp_turns|length }})
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" data-bs-toggle="tab" href="#blind-spots">
+                            Blind Spots ({{ analysis_data.blind_spots|length }})
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" data-bs-toggle="tab" href="#emergency-services">
+                            Emergency Services ({{ analysis_data.emergency_services|length }})
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" data-bs-toggle="tab" href="#road-conditions">
+                            Road Conditions ({{ analysis_data.road_conditions|length }})
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" data-bs-toggle="tab" href="#api-logs">
+                            API Logs ({{ api_logs|length }})
+                        </a>
+                    </li>
+                </ul>
+            </div>
+            
+            <div class="card-body">
+                <div class="tab-content" id="analysisTabContent">
+                    <!-- Sharp Turns Tab -->
+                    <div class="tab-pane fade show active" id="sharp-turns">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Location</th>
+                                        <th>Angle</th>
+                                        <th>Direction</th>
+                                        <th>Risk Score</th>
+                                        <th>Recommended Speed</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for turn in analysis_data.sharp_turns %}
+                                    <tr>
+                                        <td>{{ turn.latitude }}, {{ turn.longitude }}</td>
+                                        <td>{{ turn.turnAngle }}°</td>
+                                        <td>{{ turn.turnDirection }}</td>
+                                        <td>
+                                            <span class="badge bg-{% if turn.riskScore >= 8 %}danger{% elif turn.riskScore >= 6 %}warning{% else %}info{% endif %}">
+                                                {{ turn.riskScore }}
+                                            </span>
+                                        </td>
+                                        <td>{{ turn.recommendedSpeed }} km/h</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Blind Spots Tab -->
+                    <div class="tab-pane fade" id="blind-spots">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Location</th>
+                                        <th>Type</th>
+                                        <th>Visibility</th>
+                                        <th>Risk Score</th>
+                                        <th>Action Required</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for spot in analysis_data.blind_spots %}
+                                    <tr>
+                                        <td>{{ spot.latitude }}, {{ spot.longitude }}</td>
+                                        <td>{{ spot.spotType }}</td>
+                                        <td>{{ spot.visibilityDistance }}m</td>
+                                        <td>
+                                            <span class="badge bg-{% if spot.riskScore >= 8 %}danger{% elif spot.riskScore >= 6 %}warning{% else %}info{% endif %}">
+                                                {{ spot.riskScore }}
+                                            </span>
+                                        </td>
+                                        <td>{{ spot.driver_action_required }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Emergency Services Tab -->
+                    <div class="tab-pane fade" id="emergency-services">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Service Type</th>
+                                        <th>Name</th>
+                                        <th>Distance</th>
+                                        <th>Phone</th>
+                                        <th>Address</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for service in analysis_data.emergency_services %}
+                                    <tr>
+                                        <td>
+                                            <span class="badge bg-{% if service.serviceType == 'hospital' %}danger{% elif service.serviceType == 'police' %}primary{% else %}warning{% endif %}">
+                                                {{ service.serviceType }}
+                                            </span>
+                                        </td>
+                                        <td>{{ service.name }}</td>
+                                        <td>{{ service.distanceFromRouteKm }} km</td>
+                                        <td>{{ service.phoneNumber }}</td>
+                                        <td>{{ service.address }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Road Conditions Tab -->
+                    <div class="tab-pane fade" id="road-conditions">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Location</th>
+                                        <th>Road Type</th>
+                                        <th>Surface Quality</th>
+                                        <th>Width</th>
+                                        <th>Risk Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for condition in analysis_data.road_conditions %}
+                                    <tr>
+                                        <td>{{ condition.latitude }}, {{ condition.longitude }}</td>
+                                        <td>{{ condition.roadType }}</td>
+                                        <td>{{ condition.surfaceQuality }}</td>
+                                        <td>{{ condition.widthMeters }}m</td>
+                                        <td>
+                                            <span class="badge bg-{% if condition.riskScore >= 8 %}danger{% elif condition.riskScore >= 6 %}warning{% else %}info{% endif %}">
+                                                {{ condition.riskScore }}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- API Logs Tab -->
+                    <div class="tab-pane fade" id="api-logs">
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>API</th>
+                                        <th>Endpoint</th>
+                                        <th>Status</th>
+                                        <th>Response Time</th>
+                                        <th>Timestamp</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for log in api_logs %}
+                                    <tr>
+                                        <td>{{ log.api_name }}</td>
+                                        <td>{{ log.endpoint[:50] }}...</td>
+                                        <td>
+                                            <span class="badge bg-{% if log.status_code == 200 %}success{% else %}danger{% endif %}">
+                                                {{ log.status_code }}
+                                            </span>
+                                        </td>
+                                        <td>{{ log.response_time }}ms</td>
+                                        <td>{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

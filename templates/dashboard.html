@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - HPCL Route Management{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2><i class="fas fa-tachometer-alt"></i> Route Management Dashboard</h2>
+        <hr>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary">
+            <div class="card-body">
+                <h5 class="card-title">Total Routes</h5>
+                <p class="card-text display-6">{{ stats.total }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <h5 class="card-title">Processed</h5>
+                <p class="card-text display-6">{{ stats.processed }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning">
+            <div class="card-body">
+                <h5 class="card-title">Pending</h5>
+                <p class="card-text display-6">{{ stats.pending }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-danger">
+            <div class="card-body">
+                <h5 class="card-title">Failed</h5>
+                <p class="card-text display-6">{{ stats.failed }}</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Routes Table -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Routes</h5>
+                <a href="{{ url_for('upload') }}" class="btn btn-primary btn-sm">
+                    <i class="fas fa-upload"></i> Upload CSV
+                </a>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Route Name</th>
+                                <th>From</th>
+                                <th>To</th>
+                                <th>Distance</th>
+                                <th>Status</th>
+                                <th>Risk Level</th>
+                                <th>PDF</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for route in routes %}
+                            <tr>
+                                <td>{{ route.route_name }}</td>
+                                <td>{{ route.from_code }}</td>
+                                <td>{{ route.to_code }}</td>
+                                <td>{{ route.total_distance }} km</td>
+                                <td>
+                                    {% if route.processing_status == 'completed' %}
+                                        <span class="badge bg-success">Completed</span>
+                                    {% elif route.processing_status == 'processing' %}
+                                        <span class="badge bg-primary">Processing</span>
+                                    {% elif route.processing_status == 'failed' %}
+                                        <span class="badge bg-danger">Failed</span>
+                                    {% else %}
+                                        <span class="badge bg-warning">Pending</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if route.risk_scores.risk_level %}
+                                        <span class="badge bg-{% if route.risk_scores.risk_level == 'CRITICAL' %}danger{% elif route.risk_scores.risk_level == 'HIGH' %}warning{% elif route.risk_scores.risk_level == 'MEDIUM' %}info{% else %}success{% endif %}">
+                                            {{ route.risk_scores.risk_level }}
+                                        </span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if route.pdf_generated %}
+                                        <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
+                                           class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-file-pdf"></i>
+                                        </a>
+                                    {% else %}
+                                        <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <a href="{{ url_for('route_detail', route_id=route._id) }}" 
+                                       class="btn btn-sm btn-info">
+                                        <i class="fas fa-eye"></i> View
+                                    </a>
+                                    {% if route.processing_status == 'completed' and not route.pdf_generated %}
+                                        <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
+                                           class="btn btn-sm btn-success">
+                                            <i class="fas fa-file-pdf"></i> Generate PDF
+                                        </a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                
+                <!-- Pagination -->
+                <nav aria-label="Route pagination">
+                    <ul class="pagination justify-content-center">
+                        <li class="page-item {% if page == 1 %}disabled{% endif %}">
+                            <a class="page-link" href="{{ url_for('dashboard', page=page-1) }}">Previous</a>
+                        </li>
+                        <li class="page-item active">
+                            <span class="page-link">Page {{ page }}</span>
+                        </li>
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('dashboard', page=page+1) }}">Next</a>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Routes - HPCL Route Management{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h4><i class="fas fa-upload"></i> Upload Route CSV</h4>
+            </div>
+            <div class="card-body">
+                <form method="POST" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="csv_file" class="form-label">Select CSV File</label>
+                        <input type="file" class="form-control" id="csv_file" name="csv_file" 
+                               accept=".csv" required>
+                        <div class="form-text">
+                            CSV should contain: BU Code, Row Labels, Customer Name, Location
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-info">
+                        <h6>CSV Format Requirements:</h6>
+                        <ul>
+                            <li>Column 1: BU Code (From location code)</li>
+                            <li>Column 2: Row Labels (To location code)</li>
+                            <li>Column 3: Customer Name</li>
+                            <li>Column 4: Location</li>
+                        </ul>
+                        <p class="mb-0">
+                            Coordinate files should be in route_data folder named as: 
+                            <code>BUCode_RowLabels.xlsx</code>
+                        </p>
+                    </div>
+                    
+                    <div class="d-grid">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-upload"></i> Upload and Process
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

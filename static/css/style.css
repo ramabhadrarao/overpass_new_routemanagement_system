@@ -1,0 +1,218 @@
+/* Custom styles for HPCL Route Management System */
+
+:root {
+    --primary-color: #005293;
+    --secondary-color: #3C3C3C;
+    --danger-color: #DC3545;
+    --warning-color: #FD7E14;
+    --success-color: #28A745;
+    --info-color: #005293;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f8f9fa;
+}
+
+.navbar-brand {
+    font-weight: bold;
+    font-size: 1.3rem;
+}
+
+.card {
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    margin-bottom: 20px;
+}
+
+.card-header {
+    border-radius: 10px 10px 0 0 !important;
+    font-weight: bold;
+}
+
+.badge {
+    padding: 5px 10px;
+    font-size: 0.85rem;
+}
+
+.table {
+    font-size: 0.9rem;
+}
+
+.btn {
+    border-radius: 5px;
+    padding: 8px 15px;
+}
+
+.btn-sm {
+    padding: 5px 10px;
+    font-size: 0.85rem;
+}
+
+/* Dashboard Statistics Cards */
+.card.text-white {
+    border: none;
+}
+
+.card.text-white .card-title {
+    font-size: 1rem;
+    margin-bottom: 10px;
+}
+
+.card.text-white .display-6 {
+    font-size: 2.5rem;
+    font-weight: bold;
+}
+
+/* Login Page */
+.login-container {
+    min-height: 80vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Route Details Tabs */
+.nav-tabs .nav-link {
+    color: var(--secondary-color);
+    font-weight: 500;
+}
+
+.nav-tabs .nav-link.active {
+    color: var(--primary-color);
+    font-weight: bold;
+}
+
+/* Status Badges */
+.badge.bg-success {
+    background-color: var(--success-color) !important;
+}
+
+.badge.bg-danger {
+    background-color: var(--danger-color) !important;
+}
+
+.badge.bg-warning {
+    background-color: var(--warning-color) !important;
+}
+
+.badge.bg-info {
+    background-color: var(--info-color) !important;
+}
+
+/* Responsive Tables */
+.table-responsive {
+    border-radius: 5px;
+}
+
+/* Footer */
+.footer {
+    margin-top: auto;
+    background-color: #f8f9fa;
+    border-top: 1px solid #dee2e6;
+}
+
+/* Loading Spinner */
+.spinner-border {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-width: 0.2em;
+}
+
+/* Progress Bar */
+.progress {
+    height: 25px;
+    border-radius: 5px;
+}
+
+.progress-bar {
+    font-size: 0.9rem;
+    font-weight: bold;
+}
+
+/* Alert Messages */
+.alert {
+    border-radius: 5px;
+    border: none;
+}
+
+/* Map Container */
+.map-container {
+    height: 400px;
+    width: 100%;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 20px;
+}
+
+/* Risk Score Colors */
+.risk-critical {
+    color: #DC3545;
+    font-weight: bold;
+}
+
+.risk-high {
+    color: #FD7E14;
+    font-weight: bold;
+}
+
+.risk-medium {
+    color: #FFC107;
+}
+
+.risk-low {
+    color: #28A745;
+}
+
+/* Pagination */
+.pagination {
+    margin-top: 20px;
+}
+
+.page-link {
+    color: var(--primary-color);
+}
+
+.page-item.active .page-link {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+/* File Upload */
+.form-control[type="file"] {
+    padding: 10px;
+}
+
+/* Dropdown */
+.dropdown-menu {
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .card {
+        margin-bottom: 15px;
+    }
+    
+    .btn {
+        font-size: 0.9rem;
+        padding: 6px 12px;
+    }
+    
+    .table {
+        font-size: 0.8rem;
+    }
+}
+
+/* Print Styles */
+@media print {
+    .navbar, .footer, .btn {
+        display: none !important;
+    }
+    
+    .card {
+        box-shadow: none !important;
+        border: 1px solid #dee2e6 !important;
+    }
+}
