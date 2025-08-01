@@ -188,7 +188,135 @@ body {
     border-radius: 5px;
     box-shadow: 0 0 10px rgba(0,0,0,0.1);
 }
+/* Add these styles to static/css/style.css */
 
+/* Upload Progress Styles */
+#progressSection .card {
+    border: 1px solid #e0e0e0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+#progressSection .progress {
+    background-color: #f0f0f0;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+}
+
+#progressSection .progress-bar {
+    transition: width 0.5s ease-in-out;
+    font-weight: bold;
+}
+
+/* Statistics Cards */
+#progressSection .card.border-primary {
+    border-color: var(--primary-color) !important;
+}
+
+#progressSection .card.border-success {
+    border-color: var(--success-color) !important;
+}
+
+#progressSection .card.border-warning {
+    border-color: var(--warning-color) !important;
+}
+
+#progressSection .card.border-danger {
+    border-color: var(--danger-color) !important;
+}
+
+#progressSection .card-body h4 {
+    font-size: 2rem;
+    font-weight: bold;
+}
+
+#progressSection .card-subtitle {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Processing Log */
+#processingLog {
+    font-family: 'Consolas', 'Monaco', monospace;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+    padding: 10px;
+}
+
+#processingLog .log-entry {
+    border-left: 3px solid transparent;
+    padding-left: 10px;
+    transition: all 0.3s ease;
+}
+
+#processingLog .log-entry:hover {
+    background-color: #e9ecef;
+    border-left-color: var(--primary-color);
+}
+
+#processingLog .badge {
+    font-size: 0.75rem;
+    min-width: 70px;
+    display: inline-block;
+}
+
+/* Time Statistics */
+#elapsedTime, #remainingTime, #processingSpeed {
+    font-size: 1.1rem;
+    color: var(--primary-color);
+}
+
+/* Animated spinner */
+.fa-spinner {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Progress bar animations */
+.progress-bar-striped {
+    background-image: linear-gradient(
+        45deg,
+        rgba(255, 255, 255, .15) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(255, 255, 255, .15) 50%,
+        rgba(255, 255, 255, .15) 75%,
+        transparent 75%,
+        transparent
+    );
+    background-size: 1rem 1rem;
+}
+
+.progress-bar-animated {
+    animation: progress-bar-stripes 1s linear infinite;
+}
+
+@keyframes progress-bar-stripes {
+    0% {
+        background-position: 1rem 0;
+    }
+    100% {
+        background-position: 0 0;
+    }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    #progressSection .col-md-3 {
+        margin-bottom: 10px;
+    }
+    
+    #progressSection .card-body h4 {
+        font-size: 1.5rem;
+    }
+    
+    #processingLog {
+        font-size: 0.8rem;
+    }
+}
 /* Responsive Design */
 @media (max-width: 768px) {
     .card {

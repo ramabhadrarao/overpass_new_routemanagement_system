@@ -501,7 +501,34 @@ class RouteProcessor:
             traffic_data.append(traffic)
         
         return traffic_data
-    
+    # Add this method to the RouteProcessor class in services/route_processor.py
+
+    def process_single_route_with_id(self, route_id: str, route_info: Dict, coordinates: List[Dict]) -> Dict:
+        """Process a single route that has already been created in the database"""
+        # Update processing status
+        self.route_model.update_processing_status(route_id, 'processing')
+        
+        try:
+            # Process route analysis
+            analysis_results = self._analyze_route(route_id, coordinates)
+            
+            # Calculate risk scores
+            risk_scores = self.risk_calculator.calculate_overall_risk_score(analysis_results)
+            
+            # Update route with risk scores
+            self.route_model.update_risk_scores(route_id, risk_scores['scores'])
+            self.route_model.update_processing_status(route_id, 'completed')
+            
+            return {
+                'route_id': route_id,
+                'status': 'completed',
+                'risk_level': risk_scores['risk_level'],
+                'overall_score': risk_scores['overall']
+            }
+            
+        except Exception as e:
+            self.route_model.update_processing_status(route_id, 'failed', str(e))
+            raise e
     def _clear_route_analysis(self, route_id: str):
         """Clear existing analysis data for a route"""
         route_obj_id = ObjectId(route_id)
