@@ -1,6 +1,14 @@
+from datetime import datetime
+from bson import ObjectId
+
 class RoadCondition:
     collection_name = 'roadconditions'
     
+    def __init__(self, db):
+        self.collection = db[self.collection_name]
+        self.collection.create_index([('routeId', 1)])
+        self.collection.create_index([('riskScore', -1)])
+        
     def create_road_condition(self, route_id, condition_data):
         """Create road condition with all required fields"""
         condition_doc = {

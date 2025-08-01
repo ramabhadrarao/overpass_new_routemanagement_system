@@ -1,6 +1,14 @@
+from datetime import datetime
+from bson import ObjectId
+
 class EmergencyService:
     collection_name = 'emergencyservices'  # PDF uses this
     
+    def __init__(self, db):
+        self.collection = db[self.collection_name]
+        self.collection.create_index([('routeId', 1)])
+        self.collection.create_index([('distanceFromRouteKm', 1)])
+        
     def create_emergency_service(self, route_id, service_data):
         """Create emergency service with all required fields"""
         service_doc = {

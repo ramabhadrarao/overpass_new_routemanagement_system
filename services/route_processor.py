@@ -2,6 +2,7 @@
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
+from bson import ObjectId
 from services.overpass_service import OverpassService
 from services.risk_calculator import RiskCalculator
 from utils.file_parser import FileParser
@@ -202,6 +203,9 @@ class RouteProcessor:
         # 3. Get emergency services
         emergency_services = self.overpass_service.get_emergency_services(route_id, bounds)
         for service in emergency_services:
+            service['distance_from_route_km'] = self._calculate_distance_to_route(
+                service['latitude'], service['longitude'], coordinates
+            )
             service['distance_from_start_km'] = self._calculate_distance_along_route(
                 service['latitude'], service['longitude'], coordinates
             )
@@ -216,6 +220,7 @@ class RouteProcessor:
         for condition in road_conditions:
             condition['has_potholes'] = condition['surface_quality'] in ['poor', 'critical']
             condition['lanes'] = condition.get('lanes', 2)
+            condition['data_source'] = 'OVERPASS_API'
             
             self.road_condition_model.create_road_condition(route_id, condition)
         results['road_conditions'] = road_conditions
@@ -233,6 +238,9 @@ class RouteProcessor:
         # 6. Get eco-sensitive zones
         eco_zones = self.overpass_service.get_eco_sensitive_zones(route_id, bounds)
         for zone in eco_zones:
+            zone['distance_from_route_km'] = self._calculate_distance_to_route(
+                zone['latitude'], zone['longitude'], coordinates
+            )
             zone['distance_from_start_km'] = self._calculate_distance_along_route(
                 zone['latitude'], zone['longitude'], coordinates
             )
@@ -287,6 +295,19 @@ class RouteProcessor:
             'min_lng': min(lngs) - 0.05,
             'max_lng': max(lngs) + 0.05
         }
+    
+    def _calculate_distance_to_route(self, lat: float, lng: float, 
+                                     route_points: List[Dict]) -> float:
+        """Calculate minimum distance from a point to the route"""
+        min_distance = float('inf')
+        
+        for point in route_points:
+            distance = self.risk_calculator.calculate_distance(
+                lat, lng, point['latitude'], point['longitude']
+            )
+            min_distance = min(min_distance, distance)
+            
+        return round(min_distance, 2)
     
     def _calculate_distance_along_route(self, lat: float, lng: float, 
                                        route_points: List[Dict]) -> float:
@@ -483,7 +504,6 @@ class RouteProcessor:
     
     def _clear_route_analysis(self, route_id: str):
         """Clear existing analysis data for a route"""
-        from bson import ObjectId
         route_obj_id = ObjectId(route_id)
         
         # Clear all related collections

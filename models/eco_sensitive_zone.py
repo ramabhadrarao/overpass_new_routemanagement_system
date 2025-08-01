@@ -1,6 +1,14 @@
+from datetime import datetime
+from bson import ObjectId
+
 class EcoSensitiveZone:
     collection_name = 'ecosensitivezones'
     
+    def __init__(self, db):
+        self.collection = db[self.collection_name]
+        self.collection.create_index([('routeId', 1)])
+        self.collection.create_index([('severity', 1)])
+        
     def create_eco_zone(self, route_id, zone_data):
         """Create eco sensitive zone with all required fields"""
         zone_doc = {
