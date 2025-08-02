@@ -5619,9 +5619,11 @@ class HPCLDynamicPDFGenerator:
             # Load route data
             route_data = self.load_route_data(route_id)
             
+            # Extract route name first (before using it)
+            route_name = route_data['route'].get('routeName', 'route').replace(' ', '_')
+            
             # Determine output path
             if not output_path:
-                route_name = route_data['route'].get('routeName', 'route').replace(' ', '_')
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 output_path = f"HPCL_Route_Analysis_{route_name}_{timestamp}.pdf"
             
