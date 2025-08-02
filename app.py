@@ -1,5 +1,5 @@
 # app.py
-# Main Flask application file - Updated for faster processing
+# Main Flask application file - Updated with delete functionality and fixes
 # Path: /app.py
 
 import os
@@ -9,6 +9,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
 from pymongo import MongoClient
+from bson import ObjectId
 from config import Config
 from models import User, Route, APILog
 from services.route_processor import RouteProcessor
@@ -131,7 +132,27 @@ def dashboard():
     page = request.args.get('page', 1, type=int)
     per_page = 20
     
-    routes = route_model.get_all_routes(skip=(page-1)*per_page, limit=per_page)
+    # Get all routes with proper field conversion
+    skip = (page - 1) * per_page
+    routes_cursor = db.routes.find().sort('created_at', -1).skip(skip).limit(per_page)
+    routes = []
+    
+    for route in routes_cursor:
+        # Ensure all fields are properly formatted
+        route_data = {
+            '_id': str(route['_id']),
+            'routeName': route.get('routeName') or route.get('route_name', 'N/A'),
+            'fromCode': route.get('fromCode') or route.get('from_code', ''),
+            'toCode': route.get('toCode') or route.get('to_code', ''),
+            'fromAddress': route.get('fromAddress') or route.get('from_address', ''),
+            'toAddress': route.get('toAddress') or route.get('to_address', ''),
+            'totalDistance': route.get('totalDistance') or route.get('total_distance', 0),
+            'estimatedDuration': route.get('estimatedDuration') or route.get('estimated_duration', 0),
+            'processing_status': route.get('processing_status', 'pending'),
+            'pdf_generated': route.get('pdf_generated', False),
+            'risk_scores': route.get('risk_scores', {})
+        }
+        routes.append(route_data)
     
     # Get statistics
     total_routes = db.routes.count_documents({})
@@ -166,17 +187,30 @@ def route_detail(route_id):
         return redirect(url_for('dashboard'))
         
     # Get analysis data
-    sharp_turns = list(db.sharpturns.find({'routeId': route['_id']}))
-    blind_spots = list(db.blindspots.find({'routeId': route['_id']}))
-    emergency_services = list(db.emergencyservices.find({'routeId': route['_id']}))
-    road_conditions = list(db.roadconditions.find({'routeId': route['_id']}))
-    network_coverage = list(db.networkcoverages.find({'routeId': route['_id']}))
-    eco_zones = list(db.ecosensitivezones.find({'routeId': route['_id']}))
-    accident_areas = list(db.accidentproneareas.find({'routeId': route['_id']}))
+    route_obj_id = ObjectId(route_id)
+    
+    # Fetch all data from collections
+    sharp_turns = list(db.sharpturns.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
+    blind_spots = list(db.blindspots.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
+    emergency_services = list(db.emergencyservices.find({'routeId': route_obj_id}).sort('distanceFromRouteKm', 1))
+    road_conditions = list(db.roadconditions.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
+    network_coverage = list(db.networkcoverages.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
+    eco_zones = list(db.ecosensitivezones.find({'routeId': route_obj_id}))
+    accident_areas = list(db.accidentproneareas.find({'routeId': route_obj_id}).sort('riskScore', -1))
+    weather_conditions = list(db.weatherconditions.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
+    traffic_data = list(db.trafficdata.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
+    
+    # Convert ObjectIds to strings for JSON serialization
+    for doc_list in [sharp_turns, blind_spots, emergency_services, road_conditions, 
+                     network_coverage, eco_zones, accident_areas, weather_conditions, traffic_data]:
+        for doc in doc_list:
+            doc['_id'] = str(doc['_id'])
+            doc['routeId'] = str(doc['routeId'])
     
     # Get API logs
     api_logs = api_log_model.get_route_api_logs(route_id)
     
+    # Prepare analysis data
     analysis_data = {
         'sharp_turns': sharp_turns,
         'blind_spots': blind_spots,
@@ -187,10 +221,23 @@ def route_detail(route_id):
         'accident_areas': accident_areas
     }
     
+    # Calculate summary statistics
+    stats = {
+        'total_sharp_turns': len(sharp_turns),
+        'critical_sharp_turns': len([t for t in sharp_turns if t.get('riskScore', 0) >= 8]),
+        'total_blind_spots': len(blind_spots),
+        'dead_zones': len([n for n in network_coverage if n.get('isDeadZone', False)]),
+        'emergency_services_nearby': len([e for e in emergency_services if e.get('distanceFromRouteKm', 0) < 5]),
+        'poor_road_sections': len([r for r in road_conditions if r.get('surfaceQuality') in ['poor', 'critical']])
+    }
+    
     return render_template('route_detail.html', 
                          route=route, 
                          analysis_data=analysis_data,
-                         api_logs=api_logs)
+                         weather_data=weather_conditions,
+                         traffic_data=traffic_data,
+                         api_logs=api_logs,
+                         stats=stats)
 
 @app.route('/generate_pdf/<route_id>')
 @login_required
@@ -208,8 +255,9 @@ def generate_pdf(route_id):
         route_model.mark_pdf_generated(route_id, pdf_path)
         
         # Return the PDF file
+        route_name = route.get('routeName') or route.get('route_name', 'route')
         return send_file(pdf_path, as_attachment=True, 
-                        download_name=f"route_analysis_{route['routeName']}.pdf")
+                        download_name=f"route_analysis_{route_name}.pdf")
         
     except Exception as e:
         flash(f'Error generating PDF: {str(e)}', 'danger')
@@ -232,6 +280,105 @@ def process_route_api(route_id):
         
     except Exception as e:
         logger.error(f"Route processing error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/routes/<route_id>', methods=['DELETE'])
+@login_required
+def delete_route_api(route_id):
+    """API endpoint to delete a route and all associated data"""
+    try:
+        # Verify route exists
+        route = route_model.find_by_id(route_id)
+        if not route:
+            return jsonify({'error': 'Route not found'}), 404
+        
+        # Delete all associated data
+        route_obj_id = ObjectId(route_id)
+        
+        # Delete from all collections
+        delete_counts = {
+            'sharpturns': db.sharpturns.delete_many({'routeId': route_obj_id}).deleted_count,
+            'blindspots': db.blindspots.delete_many({'routeId': route_obj_id}).deleted_count,
+            'accidentproneareas': db.accidentproneareas.delete_many({'routeId': route_obj_id}).deleted_count,
+            'emergencyservices': db.emergencyservices.delete_many({'routeId': route_obj_id}).deleted_count,
+            'roadconditions': db.roadconditions.delete_many({'routeId': route_obj_id}).deleted_count,
+            'networkcoverages': db.networkcoverages.delete_many({'routeId': route_obj_id}).deleted_count,
+            'ecosensitivezones': db.ecosensitivezones.delete_many({'routeId': route_obj_id}).deleted_count,
+            'weatherconditions': db.weatherconditions.delete_many({'routeId': route_obj_id}).deleted_count,
+            'trafficdata': db.trafficdata.delete_many({'routeId': route_obj_id}).deleted_count,
+            'api_logs': db.api_logs.delete_many({'route_id': route_obj_id}).deleted_count
+        }
+        
+        # Delete the route itself
+        db.routes.delete_one({'_id': route_obj_id})
+        
+        # Delete PDF if exists
+        if route.get('pdf_path') and os.path.exists(route['pdf_path']):
+            try:
+                os.remove(route['pdf_path'])
+            except:
+                pass
+        
+        logger.info(f"Deleted route {route_id} and associated data: {delete_counts}")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Route {route.get("routeName", route_id)} deleted successfully',
+            'deleted_data': delete_counts
+        })
+        
+    except Exception as e:
+        logger.error(f"Error deleting route: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/routes/bulk-delete', methods=['POST'])
+@login_required
+def bulk_delete_routes_api():
+    """API endpoint to delete multiple routes"""
+    try:
+        data = request.get_json()
+        route_ids = data.get('route_ids', [])
+        
+        if not route_ids:
+            return jsonify({'error': 'No routes selected'}), 400
+        
+        deleted_count = 0
+        errors = []
+        
+        for route_id in route_ids:
+            try:
+                # Use the delete function
+                route_obj_id = ObjectId(route_id)
+                
+                # Delete all associated data
+                db.sharpturns.delete_many({'routeId': route_obj_id})
+                db.blindspots.delete_many({'routeId': route_obj_id})
+                db.accidentproneareas.delete_many({'routeId': route_obj_id})
+                db.emergencyservices.delete_many({'routeId': route_obj_id})
+                db.roadconditions.delete_many({'routeId': route_obj_id})
+                db.networkcoverages.delete_many({'routeId': route_obj_id})
+                db.ecosensitivezones.delete_many({'routeId': route_obj_id})
+                db.weatherconditions.delete_many({'routeId': route_obj_id})
+                db.trafficdata.delete_many({'routeId': route_obj_id})
+                db.api_logs.delete_many({'route_id': route_obj_id})
+                
+                # Delete the route
+                result = db.routes.delete_one({'_id': route_obj_id})
+                if result.deleted_count > 0:
+                    deleted_count += 1
+                    
+            except Exception as e:
+                errors.append(f"Error deleting route {route_id}: {str(e)}")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Deleted {deleted_count} routes',
+            'deleted_count': deleted_count,
+            'errors': errors
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in bulk delete: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/route_status/<route_id>')
@@ -260,13 +407,23 @@ def statistics_api():
     api_stats = api_log_model.get_api_stats()
     
     # Risk distribution
-    risk_distribution = db.routes.aggregate([
+    risk_distribution = list(db.routes.aggregate([
         {'$match': {'processing_status': 'completed'}},
         {'$group': {
             '_id': '$risk_scores.risk_level',
             'count': {'$sum': 1}
         }}
-    ])
+    ]))
+    
+    # API call counts by type
+    api_call_counts = list(db.api_logs.aggregate([
+        {'$group': {
+            '_id': '$api_name',
+            'count': {'$sum': 1},
+            'avg_response_time': {'$avg': '$response_time'}
+        }},
+        {'$sort': {'count': -1}}
+    ]))
     
     return jsonify({
         'routes': {
@@ -275,7 +432,8 @@ def statistics_api():
             'processing_rate': (processed_routes / total_routes * 100) if total_routes > 0 else 0
         },
         'api_usage': api_stats,
-        'risk_distribution': list(risk_distribution)
+        'api_call_counts': api_call_counts,
+        'risk_distribution': risk_distribution
     })
 
 # Error handlers
@@ -372,17 +530,21 @@ def process_routes_async(filepath, upload_id, user_id):
         # Parse CSV
         routes = file_parser.parse_route_csv(filepath)
         
+        # Log start
+        logger.info(f"Starting async processing of {len(routes)} routes from {filepath}")
+        
         for index, route_info in enumerate(routes):
             # Check if cancelled
             if upload_progress[upload_id]['status'] == 'cancelled':
+                logger.info(f"Processing cancelled at route {index + 1}/{len(routes)}")
                 break
             
-            # Update current route
+            # Update current route with detailed stage
             route_name = f"{route_info['BU Code']}_to_{route_info['Row Labels']}"
             upload_progress[upload_id]['current_route'] = {
                 'name': route_name,
                 'stage': 'processing',
-                'stage_text': 'Processing route...'
+                'stage_text': f'Processing route {index + 1}/{len(routes)}...'
             }
             
             # Check if route already exists
@@ -391,17 +553,22 @@ def process_routes_async(filepath, upload_id, user_id):
                 route_info['Row Labels']
             )
             
-            if existing_route and existing_route['processing_status'] == 'completed':
+            if existing_route and existing_route.get('processing_status') == 'completed':
                 upload_progress[upload_id]['skipped'] += 1
                 upload_progress[upload_id]['last_completed'] = {
                     'name': route_name,
                     'status': 'skipped',
                     'message': 'Route already processed'
                 }
+                logger.info(f"Skipped existing route: {route_name}")
                 continue
             
             # Process the route
             try:
+                # Update stage
+                upload_progress[upload_id]['current_route']['stage'] = 'analyzing_geometry'
+                upload_progress[upload_id]['current_route']['stage_text'] = 'Finding coordinate file...'
+                
                 # Find coordinate file
                 coord_file = file_parser.find_coordinate_file(
                     route_info['BU Code'],
@@ -410,27 +577,61 @@ def process_routes_async(filepath, upload_id, user_id):
                 )
                 
                 if not coord_file:
-                    raise ValueError(f"Coordinate file not found")
+                    raise ValueError(f"Coordinate file not found for {route_name}")
                 
                 # Parse coordinates
+                upload_progress[upload_id]['current_route']['stage_text'] = 'Parsing coordinates...'
                 coordinates = file_parser.parse_coordinate_file(coord_file)
+                
                 if not coordinates:
-                    raise ValueError("No valid coordinates found")
+                    raise ValueError(f"No valid coordinates found in {coord_file}")
                 
-                # Create route
+                logger.info(f"Found {len(coordinates)} coordinates for route {route_name}")
+                
+                # Create or update route
                 route_data = prepare_route_data(route_info, coordinates)
-                route_result = route_model.create_route(route_data)
-                route_id = str(route_result.inserted_id)
                 
-                # Process route with simulated data (FAST MODE)
-                route_processor.process_single_route_simulated(route_id, route_info, coordinates)
+                if existing_route:
+                    # Update existing route
+                    route_id = str(existing_route['_id'])
+                    db.routes.update_one(
+                        {'_id': existing_route['_id']},
+                        {'$set': route_data}
+                    )
+                    logger.info(f"Updated existing route {route_id}")
+                else:
+                    # Create new route
+                    route_result = route_model.create_route(route_data)
+                    route_id = str(route_result.inserted_id)
+                    logger.info(f"Created new route {route_id}")
                 
-                upload_progress[upload_id]['processed'] += 1
-                upload_progress[upload_id]['last_completed'] = {
-                    'name': route_name,
-                    'status': 'completed',
-                    'message': 'Successfully processed'
-                }
+                # Update stage
+                upload_progress[upload_id]['current_route']['stage'] = 'fetching_services'
+                upload_progress[upload_id]['current_route']['stage_text'] = 'Analyzing route data...'
+                
+                # Process route with fast mode
+                try:
+                    route_processor.process_single_route_fast(route_id, route_info, coordinates)
+                    
+                    upload_progress[upload_id]['processed'] += 1
+                    upload_progress[upload_id]['last_completed'] = {
+                        'name': route_name,
+                        'status': 'completed',
+                        'message': 'Successfully processed'
+                    }
+                    logger.info(f"Successfully processed route {route_name}")
+                    
+                except Exception as process_error:
+                    # Try fallback processing
+                    logger.warning(f"Fast processing failed for {route_name}, trying regular mode: {process_error}")
+                    route_processor.process_single_route_with_id(route_id, route_info, coordinates)
+                    
+                    upload_progress[upload_id]['processed'] += 1
+                    upload_progress[upload_id]['last_completed'] = {
+                        'name': route_name,
+                        'status': 'completed',
+                        'message': 'Successfully processed (fallback mode)'
+                    }
                 
             except Exception as e:
                 upload_progress[upload_id]['failed'] += 1
@@ -440,14 +641,24 @@ def process_routes_async(filepath, upload_id, user_id):
                     'message': str(e)
                 }
                 logger.error(f"Error processing route {route_name}: {str(e)}")
+                
+                # Update route status if it was created
+                if 'route_id' in locals():
+                    route_model.update_processing_status(route_id, 'failed', str(e))
         
         # Mark as completed
         upload_progress[upload_id]['status'] = 'completed'
         upload_progress[upload_id]['current_route'] = None
+        upload_progress[upload_id]['end_time'] = datetime.utcnow().isoformat()
+        
+        # Calculate final statistics
+        total_processed = upload_progress[upload_id]['processed'] + upload_progress[upload_id]['skipped'] + upload_progress[upload_id]['failed']
+        logger.info(f"Completed processing: {total_processed}/{len(routes)} routes")
         
     except Exception as e:
         upload_progress[upload_id]['status'] = 'failed'
         upload_progress[upload_id]['error'] = str(e)
+        upload_progress[upload_id]['current_route'] = None
         logger.error(f"Error in async processing: {str(e)}")
 
 def prepare_route_data(route_info, coordinates):

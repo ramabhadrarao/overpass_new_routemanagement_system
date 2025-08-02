@@ -1,301 +1,1310 @@
 {% extends "base.html" %}
 
-{% block title %}Route Details - {{ route.route_name }}{% endblock %}
+{% block title %}Route Details - {{ route.routeName }}{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.4.1/MarkerCluster.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.4.1/MarkerCluster.Default.css" />
+<style>
+    #routeMap {
+        height: 600px;
+        width: 100%;
+        border: 2px solid #ddd;
+        border-radius: 8px;
+    }
+    
+    .map-controls {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 1000;
+        background: white;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+    
+    .layer-control {
+        margin: 5px 0;
+    }
+    
+    .layer-control label {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        margin: 3px 0;
+        font-size: 14px;
+    }
+    
+    .layer-control input[type="checkbox"] {
+        margin-right: 8px;
+    }
+    
+    .legend {
+        position: absolute;
+        bottom: 20px;
+        left: 20px;
+        background: white;
+        padding: 10px;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        z-index: 1000;
+    }
+    
+    .legend-item {
+        display: flex;
+        align-items: center;
+        margin: 5px 0;
+        font-size: 12px;
+    }
+    
+    .legend-icon {
+        width: 20px;
+        height: 20px;
+        margin-right: 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .data-section {
+        margin-top: 20px;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .data-section-header {
+        background: #f5f5f5;
+        padding: 15px;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .data-section-header:hover {
+        background: #e8e8e8;
+    }
+    
+    .data-section-body {
+        padding: 15px;
+        display: none;
+    }
+    
+    .data-section.active .data-section-body {
+        display: block;
+    }
+    
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin-bottom: 20px;
+    }
+    
+    .stat-card {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 8px;
+        text-align: center;
+    }
+    
+    .stat-value {
+        font-size: 2em;
+        font-weight: bold;
+        color: #333;
+    }
+    
+    .stat-label {
+        color: #666;
+        font-size: 0.9em;
+        margin-top: 5px;
+    }
+    
+    .risk-badge {
+        padding: 5px 10px;
+        border-radius: 20px;
+        color: white;
+        font-weight: bold;
+        display: inline-block;
+    }
+    
+    .risk-critical { background: #dc3545; }
+    .risk-high { background: #ffc107; color: #333; }
+    .risk-medium { background: #17a2b8; }
+    .risk-low { background: #28a745; }
+    
+    .data-table {
+        width: 100%;
+        font-size: 14px;
+    }
+    
+    .data-table th {
+        background: #f8f9fa;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+    
+    .popup-content {
+        min-width: 200px;
+    }
+    
+    .popup-content h6 {
+        margin: 0 0 10px 0;
+        color: #333;
+        border-bottom: 1px solid #ddd;
+        padding-bottom: 5px;
+    }
+    
+    .popup-content p {
+        margin: 5px 0;
+        font-size: 12px;
+    }
+    
+    .route-summary {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 8px;
+        margin-bottom: 20px;
+    }
+    
+    /* Custom marker icons */
+    .marker-sharp-turn {
+        background: #ff6b6b;
+        color: white;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        border: 2px solid white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    
+    .marker-blind-spot {
+        background: #ff9800;
+        color: white;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        border: 2px solid white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    
+    .marker-emergency {
+        background: #4caf50;
+        color: white;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        border: 2px solid white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    
+    .marker-accident {
+        background: #f44336;
+        color: white;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        border: 2px solid white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    
+    .marker-eco-zone {
+        background: #8bc34a;
+        color: white;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        border: 2px solid white;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+    }
+    
+    .download-section {
+        margin-top: 20px;
+        padding: 20px;
+        background: #f8f9fa;
+        border-radius: 8px;
+    }
+</style>
+{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-12">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-            <h2><i class="fas fa-route"></i> Route: {{ route.route_name }}</h2>
-            <div>
-                {% if route.processing_status == 'completed' %}
-                    <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
-                       class="btn btn-primary">
-                        <i class="fas fa-file-pdf"></i> Generate PDF
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2><i class="fas fa-route"></i> Route: {{ route.routeName }}</h2>
+                <div>
+                    {% if route.processing_status == 'completed' %}
+                        <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
+                           class="btn btn-primary">
+                            <i class="fas fa-file-pdf"></i> Generate PDF
+                        </a>
+                    {% endif %}
+                    <button class="btn btn-info" onclick="exportRouteData()">
+                        <i class="fas fa-download"></i> Export Data
+                    </button>
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Back
                     </a>
-                {% endif %}
-                <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
-                    <i class="fas fa-arrow-left"></i> Back
-                </a>
+                </div>
             </div>
+            <hr>
         </div>
-        <hr>
     </div>
-</div>
 
-<!-- Route Information -->
-<div class="row mb-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header bg-info text-white">
-                <h5 class="mb-0">Route Information</h5>
+    <!-- Route Summary -->
+    <div class="route-summary">
+        <div class="row">
+            <div class="col-md-3">
+                <h6>From</h6>
+                <p class="mb-0"><strong>{{ route.fromAddress }}</strong></p>
+                <small class="text-muted">Code: {{ route.fromCode }}</small>
             </div>
-            <div class="card-body">
-                <table class="table table-sm">
-                    <tr>
-                        <th>From:</th>
-                        <td>{{ route.from_address }} ({{ route.from_code }})</td>
-                    </tr>
-                    <tr>
-                        <th>To:</th>
-                        <td>{{ route.to_address }} ({{ route.to_code }})</td>
-                    </tr>
-                    <tr>
-                        <th>Distance:</th>
-                        <td>{{ route.total_distance }} km</td>
-                    </tr>
-                    <tr>
-                        <th>Duration:</th>
-                        <td>{{ route.estimated_duration }} minutes</td>
-                    </tr>
-                    <tr>
-                        <th>Status:</th>
-                        <td>
-                            <span class="badge bg-{% if route.processing_status == 'completed' %}success{% elif route.processing_status == 'processing' %}primary{% else %}warning{% endif %}">
-                                {{ route.processing_status }}
-                            </span>
-                        </td>
-                    </tr>
-                </table>
+            <div class="col-md-3">
+                <h6>To</h6>
+                <p class="mb-0"><strong>{{ route.toAddress }}</strong></p>
+                <small class="text-muted">Code: {{ route.toCode }}</small>
+            </div>
+            <div class="col-md-2">
+                <h6>Distance</h6>
+                <p class="mb-0"><strong>{{ route.totalDistance }} km</strong></p>
+                <small class="text-muted">{{ route.totalWaypoints }} waypoints</small>
+            </div>
+            <div class="col-md-2">
+                <h6>Duration</h6>
+                <p class="mb-0"><strong>{{ (route.estimatedDuration / 60)|round(1) }} hours</strong></p>
+                <small class="text-muted">@ 40 km/h avg</small>
+            </div>
+            <div class="col-md-2">
+                <h6>Risk Level</h6>
+                <p class="mb-0">
+                    <span class="risk-badge risk-{{ route.risk_scores.risk_level|lower }}">
+                        {{ route.risk_scores.risk_level }}
+                    </span>
+                </p>
+                <small class="text-muted">Score: {{ route.risk_scores.overall }}/10</small>
             </div>
         </div>
     </div>
-    
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header bg-warning text-dark">
-                <h5 class="mb-0">Risk Assessment</h5>
-            </div>
-            <div class="card-body">
-                <table class="table table-sm">
-                    <tr>
-                        <th>Overall Risk:</th>
-                        <td>
-                            <span class="badge bg-{% if route.risk_scores.overall >= 8 %}danger{% elif route.risk_scores.overall >= 6 %}warning{% elif route.risk_scores.overall >= 4 %}info{% else %}success{% endif %}">
-                                {{ route.risk_scores.overall }}/10
-                            </span>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th>Sharp Turns:</th>
-                        <td>{{ route.risk_scores.sharp_turns }}/10</td>
-                    </tr>
-                    <tr>
-                        <th>Blind Spots:</th>
-                        <td>{{ route.risk_scores.blind_spots }}/10</td>
-                    </tr>
-                    <tr>
-                        <th>Road Conditions:</th>
-                        <td>{{ route.risk_scores.road_conditions }}/10</td>
-                    </tr>
-                    <tr>
-                        <th>Emergency Services:</th>
-                        <td>{{ route.risk_scores.emergency_services }}/10</td>
-                    </tr>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
 
-<!-- Analysis Data Tabs -->
-<div class="row">
-    <div class="col-12">
-        <div class="card">
-            <div class="card-header">
-                <ul class="nav nav-tabs card-header-tabs" id="analysisTab" role="tablist">
-                    <li class="nav-item">
-                        <a class="nav-link active" data-bs-toggle="tab" href="#sharp-turns">
-                            Sharp Turns ({{ analysis_data.sharp_turns|length }})
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" data-bs-toggle="tab" href="#blind-spots">
-                            Blind Spots ({{ analysis_data.blind_spots|length }})
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" data-bs-toggle="tab" href="#emergency-services">
-                            Emergency Services ({{ analysis_data.emergency_services|length }})
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" data-bs-toggle="tab" href="#road-conditions">
-                            Road Conditions ({{ analysis_data.road_conditions|length }})
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" data-bs-toggle="tab" href="#api-logs">
-                            API Logs ({{ api_logs|length }})
-                        </a>
-                    </li>
-                </ul>
-            </div>
-            
-            <div class="card-body">
-                <div class="tab-content" id="analysisTabContent">
-                    <!-- Sharp Turns Tab -->
-                    <div class="tab-pane fade show active" id="sharp-turns">
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>Location</th>
-                                        <th>Angle</th>
-                                        <th>Direction</th>
-                                        <th>Risk Score</th>
-                                        <th>Recommended Speed</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for turn in analysis_data.sharp_turns %}
-                                    <tr>
-                                        <td>{{ turn.latitude }}, {{ turn.longitude }}</td>
-                                        <td>{{ turn.turnAngle }}°</td>
-                                        <td>{{ turn.turnDirection }}</td>
-                                        <td>
-                                            <span class="badge bg-{% if turn.riskScore >= 8 %}danger{% elif turn.riskScore >= 6 %}warning{% else %}info{% endif %}">
-                                                {{ turn.riskScore }}
-                                            </span>
-                                        </td>
-                                        <td>{{ turn.recommendedSpeed }} km/h</td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
+    <!-- Interactive Map -->
+    <div class="row">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0"><i class="fas fa-map-marked-alt"></i> Interactive Route Map</h5>
+                </div>
+                <div class="card-body p-0 position-relative">
+                    <div id="routeMap"></div>
+                    
+                    <!-- Map Controls -->
+                    <div class="map-controls">
+                        <h6 class="mb-2">Layers</h6>
+                        <div class="layer-control">
+                            <label><input type="checkbox" id="toggleRoute" checked> Route Path</label>
+                            <label><input type="checkbox" id="toggleSharpTurns" checked> Sharp Turns ({{ analysis_data.sharp_turns|length }})</label>
+                            <label><input type="checkbox" id="toggleBlindSpots" checked> Blind Spots ({{ analysis_data.blind_spots|length }})</label>
+                            <label><input type="checkbox" id="toggleEmergency" checked> Emergency Services ({{ analysis_data.emergency_services|length }})</label>
+                            <label><input type="checkbox" id="toggleAccident" checked> Accident Prone ({{ analysis_data.accident_areas|length }})</label>
+                            <label><input type="checkbox" id="toggleEcoZones" checked> Eco Zones ({{ analysis_data.eco_zones|length }})</label>
+                            <label><input type="checkbox" id="toggleNetwork"> Network Coverage</label>
+                            <label><input type="checkbox" id="toggleRoadConditions"> Road Conditions</label>
                         </div>
+                        <hr>
+                        <button class="btn btn-sm btn-primary" onclick="fitMapToRoute()">
+                            <i class="fas fa-compress"></i> Fit to Route
+                        </button>
                     </div>
                     
-                    <!-- Blind Spots Tab -->
-                    <div class="tab-pane fade" id="blind-spots">
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>Location</th>
-                                        <th>Type</th>
-                                        <th>Visibility</th>
-                                        <th>Risk Score</th>
-                                        <th>Action Required</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for spot in analysis_data.blind_spots %}
-                                    <tr>
-                                        <td>{{ spot.latitude }}, {{ spot.longitude }}</td>
-                                        <td>{{ spot.spotType }}</td>
-                                        <td>{{ spot.visibilityDistance }}m</td>
-                                        <td>
-                                            <span class="badge bg-{% if spot.riskScore >= 8 %}danger{% elif spot.riskScore >= 6 %}warning{% else %}info{% endif %}">
-                                                {{ spot.riskScore }}
-                                            </span>
-                                        </td>
-                                        <td>{{ spot.driver_action_required }}</td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
+                    <!-- Legend -->
+                    <div class="legend">
+                        <h6 class="mb-2">Legend</h6>
+                        <div class="legend-item">
+                            <span class="legend-icon" style="background: #2196F3; width: 40px; height: 3px;"></span>
+                            Route Path
                         </div>
-                    </div>
-                    
-                    <!-- Emergency Services Tab -->
-                    <div class="tab-pane fade" id="emergency-services">
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>Service Type</th>
-                                        <th>Name</th>
-                                        <th>Distance</th>
-                                        <th>Phone</th>
-                                        <th>Address</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for service in analysis_data.emergency_services %}
-                                    <tr>
-                                        <td>
-                                            <span class="badge bg-{% if service.serviceType == 'hospital' %}danger{% elif service.serviceType == 'police' %}primary{% else %}warning{% endif %}">
-                                                {{ service.serviceType }}
-                                            </span>
-                                        </td>
-                                        <td>{{ service.name }}</td>
-                                        <td>{{ service.distanceFromRouteKm }} km</td>
-                                        <td>{{ service.phoneNumber }}</td>
-                                        <td>{{ service.address }}</td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
+                        <div class="legend-item">
+                            <span class="legend-icon"><i class="fas fa-exclamation-triangle" style="color: #ff6b6b;"></i></span>
+                            Sharp Turn
                         </div>
-                    </div>
-                    
-                    <!-- Road Conditions Tab -->
-                    <div class="tab-pane fade" id="road-conditions">
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>Location</th>
-                                        <th>Road Type</th>
-                                        <th>Surface Quality</th>
-                                        <th>Width</th>
-                                        <th>Risk Score</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for condition in analysis_data.road_conditions %}
-                                    <tr>
-                                        <td>{{ condition.latitude }}, {{ condition.longitude }}</td>
-                                        <td>{{ condition.roadType }}</td>
-                                        <td>{{ condition.surfaceQuality }}</td>
-                                        <td>{{ condition.widthMeters }}m</td>
-                                        <td>
-                                            <span class="badge bg-{% if condition.riskScore >= 8 %}danger{% elif condition.riskScore >= 6 %}warning{% else %}info{% endif %}">
-                                                {{ condition.riskScore }}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
+                        <div class="legend-item">
+                            <span class="legend-icon"><i class="fas fa-eye-slash" style="color: #ff9800;"></i></span>
+                            Blind Spot
                         </div>
-                    </div>
-                    
-                    <!-- API Logs Tab -->
-                    <div class="tab-pane fade" id="api-logs">
-                        <div class="table-responsive">
-                            <table class="table table-sm">
-                                <thead>
-                                    <tr>
-                                        <th>API</th>
-                                        <th>Endpoint</th>
-                                        <th>Status</th>
-                                        <th>Response Time</th>
-                                        <th>Timestamp</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for log in api_logs %}
-                                    <tr>
-                                        <td>{{ log.api_name }}</td>
-                                        <td>{{ log.endpoint[:50] }}...</td>
-                                        <td>
-                                            <span class="badge bg-{% if log.status_code == 200 %}success{% else %}danger{% endif %}">
-                                                {{ log.status_code }}
-                                            </span>
-                                        </td>
-                                        <td>{{ log.response_time }}ms</td>
-                                        <td>{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
+                        <div class="legend-item">
+                            <span class="legend-icon"><i class="fas fa-hospital" style="color: #4caf50;"></i></span>
+                            Emergency Service
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-icon"><i class="fas fa-car-crash" style="color: #f44336;"></i></span>
+                            Accident Prone
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-icon"><i class="fas fa-leaf" style="color: #8bc34a;"></i></span>
+                            Eco Zone
                         </div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+
+    <!-- Statistics Overview -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <h4>Route Risk Analysis Overview</h4>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">{{ analysis_data.sharp_turns|length }}</div>
+                    <div class="stat-label">Sharp Turns</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{ analysis_data.blind_spots|length }}</div>
+                    <div class="stat-label">Blind Spots</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{ analysis_data.accident_areas|length }}</div>
+                    <div class="stat-label">Accident Prone Areas</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{ analysis_data.emergency_services|length }}</div>
+                    <div class="stat-label">Emergency Services</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{ analysis_data.eco_zones|length }}</div>
+                    <div class="stat-label">Eco-Sensitive Zones</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{ analysis_data.network_coverage|filter(lambda x: x.isDeadZone)|length }}</div>
+                    <div class="stat-label">Network Dead Zones</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detailed Data Sections -->
+    
+    <!-- Sharp Turns -->
+    <div class="data-section active">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-exclamation-triangle text-warning"></i> Sharp Turns Analysis</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Distance (km)</th>
+                            <th>Turn Angle</th>
+                            <th>Direction</th>
+                            <th>Risk Score</th>
+                            <th>Recommended Speed</th>
+                            <th>Visibility</th>
+                            <th>Safety Features</th>
+                            <th>Action Required</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for turn in analysis_data.sharp_turns %}
+                        <tr onclick="focusOnMap({{ turn.latitude }}, {{ turn.longitude }})">
+                            <td>
+                                <i class="fas fa-map-marker-alt"></i>
+                                {{ turn.latitude|round(4) }}, {{ turn.longitude|round(4) }}
+                            </td>
+                            <td>{{ turn.distanceFromStartKm }}</td>
+                            <td>
+                                <span class="badge bg-{% if turn.turnAngle > 90 %}danger{% elif turn.turnAngle > 60 %}warning{% else %}info{% endif %}">
+                                    {{ turn.turnAngle }}°
+                                </span>
+                            </td>
+                            <td>
+                                <i class="fas fa-arrow-{% if turn.turnDirection == 'right' %}right{% else %}left{% endif %}"></i>
+                                {{ turn.turnDirection|capitalize }}
+                            </td>
+                            <td>
+                                <span class="risk-badge risk-{% if turn.riskScore >= 8 %}critical{% elif turn.riskScore >= 6 %}high{% elif turn.riskScore >= 4 %}medium{% else %}low{% endif %}">
+                                    {{ turn.riskScore }}/10
+                                </span>
+                            </td>
+                            <td>{{ turn.recommendedSpeed }} km/h</td>
+                            <td>{{ turn.visibility|capitalize }}</td>
+                            <td>
+                                {% if turn.warningSignsPresent %}<i class="fas fa-sign text-success" title="Warning signs present"></i>{% else %}<i class="fas fa-sign text-muted" title="No warning signs"></i>{% endif %}
+                                {% if turn.guardrailsPresent %}<i class="fas fa-shield-alt text-success ms-2" title="Guardrails present"></i>{% else %}<i class="fas fa-shield-alt text-muted ms-2" title="No guardrails"></i>{% endif %}
+                            </td>
+                            <td>{{ turn.driverActionRequired }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blind Spots -->
+    <div class="data-section">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-eye-slash text-danger"></i> Blind Spots Analysis</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Distance (km)</th>
+                            <th>Type</th>
+                            <th>Visibility Distance</th>
+                            <th>Risk Score</th>
+                            <th>Road Width</th>
+                            <th>Safety Features</th>
+                            <th>Action Required</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for spot in analysis_data.blind_spots %}
+                        <tr onclick="focusOnMap({{ spot.latitude }}, {{ spot.longitude }})">
+                            <td>
+                                <i class="fas fa-map-marker-alt"></i>
+                                {{ spot.latitude|round(4) }}, {{ spot.longitude|round(4) }}
+                            </td>
+                            <td>{{ spot.distanceFromStartKm }}</td>
+                            <td>
+                                <span class="badge bg-secondary">{{ spot.spotType|replace('_', ' ')|title }}</span>
+                            </td>
+                            <td>{{ spot.visibilityDistance }}m</td>
+                            <td>
+                                <span class="risk-badge risk-{% if spot.riskScore >= 8 %}critical{% elif spot.riskScore >= 6 %}high{% elif spot.riskScore >= 4 %}medium{% else %}low{% endif %}">
+                                    {{ spot.riskScore }}/10
+                                </span>
+                            </td>
+                            <td>{{ spot.roadGeometry.width }}m</td>
+                            <td>
+                                {% if spot.mirrorInstalled %}<i class="fas fa-circle text-success" title="Mirror installed"></i>{% else %}<i class="fas fa-circle text-muted" title="No mirror"></i>{% endif %}
+                                {% if spot.warningSignsPresent %}<i class="fas fa-sign text-success ms-2" title="Warning signs present"></i>{% else %}<i class="fas fa-sign text-muted ms-2" title="No warning signs"></i>{% endif %}
+                            </td>
+                            <td>{{ spot.driverActionRequired }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Emergency Services -->
+    <div class="data-section">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-hospital text-success"></i> Emergency Services</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>Service Type</th>
+                            <th>Name</th>
+                            <th>Distance from Route</th>
+                            <th>Phone</th>
+                            <th>Address</th>
+                            <th>Response Time</th>
+                            <th>Services Offered</th>
+                            <th>Priority</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for service in analysis_data.emergency_services %}
+                        <tr onclick="focusOnMap({{ service.latitude }}, {{ service.longitude }})">
+                            <td>
+                                <span class="badge bg-{% if service.serviceType == 'hospital' %}danger{% elif service.serviceType == 'police' %}primary{% elif service.serviceType == 'fire_station' %}warning{% else %}secondary{% endif %}">
+                                    <i class="fas fa-{% if service.serviceType == 'hospital' %}hospital{% elif service.serviceType == 'police' %}shield-alt{% elif service.serviceType == 'fire_station' %}fire{% else %}wrench{% endif %}"></i>
+                                    {{ service.serviceType|replace('_', ' ')|title }}
+                                </span>
+                            </td>
+                            <td>{{ service.name }}</td>
+                            <td>{{ service.distanceFromRouteKm|round(1) }} km</td>
+                            <td>{{ service.phoneNumber }}</td>
+                            <td>{{ service.address }}</td>
+                            <td>{{ service.responseTimeMinutes }} min</td>
+                            <td>{{ service.servicesOffered|join(', ')|title }}</td>
+                            <td>
+                                <span class="badge bg-{% if service.priority == 'critical' %}danger{% elif service.priority == 'high' %}warning{% else %}info{% endif %}">
+                                    {{ service.priority|capitalize }}
+                                </span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Road Conditions -->
+    <div class="data-section">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-road text-info"></i> Road Conditions</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Distance (km)</th>
+                            <th>Road Type</th>
+                            <th>Surface Quality</th>
+                            <th>Width</th>
+                            <th>Lanes</th>
+                            <th>Surface</th>
+                            <th>Issues</th>
+                            <th>Risk Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for condition in analysis_data.road_conditions %}
+                        <tr onclick="focusOnMap({{ condition.latitude }}, {{ condition.longitude }})">
+                            <td>
+                                <i class="fas fa-map-marker-alt"></i>
+                                {{ condition.latitude|round(4) }}, {{ condition.longitude|round(4) }}
+                            </td>
+                            <td>{{ condition.distanceFromStartKm|default(0)|round(1) }}</td>
+                            <td>{{ condition.roadType|title }}</td>
+                            <td>
+                                <span class="badge bg-{% if condition.surfaceQuality == 'excellent' %}success{% elif condition.surfaceQuality == 'good' %}info{% elif condition.surfaceQuality == 'fair' %}warning{% else %}danger{% endif %}">
+                                    {{ condition.surfaceQuality|capitalize }}
+                                </span>
+                            </td>
+                            <td>{{ condition.widthMeters }}m</td>
+                            <td>{{ condition.laneCount }}</td>
+                            <td>{{ condition.surface|capitalize }}</td>
+                            <td>
+                                {% if condition.hasPotholes %}<span class="badge bg-danger">Potholes</span>{% endif %}
+                                {% if condition.underConstruction %}<span class="badge bg-warning">Construction</span>{% endif %}
+                                {% if not condition.hasPotholes and not condition.underConstruction %}<span class="text-muted">None</span>{% endif %}
+                            </td>
+                            <td>
+                                <span class="risk-badge risk-{% if condition.riskScore >= 8 %}critical{% elif condition.riskScore >= 6 %}high{% elif condition.riskScore >= 4 %}medium{% else %}low{% endif %}">
+                                    {{ condition.riskScore }}/10
+                                </span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Network Coverage -->
+    <div class="data-section">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-signal text-primary"></i> Network Coverage Analysis</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Distance (km)</th>
+                            <th>Signal Strength</th>
+                            <th>Dead Zone</th>
+                            <th>Providers</th>
+                            <th>Communication Risk</th>
+                            <th>Terrain</th>
+                            <th>Alternative Methods</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for coverage in analysis_data.network_coverage %}
+                        <tr onclick="focusOnMap({{ coverage.latitude }}, {{ coverage.longitude }})">
+                            <td>
+                                <i class="fas fa-map-marker-alt"></i>
+                                {{ coverage.latitude|round(4) }}, {{ coverage.longitude|round(4) }}
+                            </td>
+                            <td>{{ coverage.distanceFromStartKm|round(1) }}</td>
+                            <td>
+                                <div class="d-flex align-items-center">
+                                    {% for i in range(1, 6) %}
+                                        <i class="fas fa-signal ms-1" style="color: {% if i <= coverage.signalStrength %}#4caf50{% else %}#e0e0e0{% endif %};"></i>
+                                    {% endfor %}
+                                    <span class="ms-2">({{ coverage.signalStrength }}/10)</span>
+                                </div>
+                            </td>
+                            <td>
+                                {% if coverage.isDeadZone %}
+                                    <span class="badge bg-danger">Yes</span>
+                                {% else %}
+                                    <span class="badge bg-success">No</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ coverage.providers|join(', ') }}</td>
+                            <td>
+                                <span class="badge bg-{% if coverage.communicationRisk == 'high' %}danger{% elif coverage.communicationRisk == 'medium' %}warning{% else %}success{% endif %}">
+                                    {{ coverage.communicationRisk|capitalize }}
+                                </span>
+                            </td>
+                            <td>{{ coverage.terrain|capitalize }}</td>
+                            <td>
+                                {% if coverage.alternativeMethods %}
+                                    {{ coverage.alternativeMethods|join(', ')|replace('_', ' ')|title }}
+                                {% else %}
+                                    <span class="text-muted">None</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Weather Conditions -->
+    {% if weather_data %}
+    <div class="data-section">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-cloud-sun text-info"></i> Weather Analysis</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Season</th>
+                            <th>Weather</th>
+                            <th>Temperature</th>
+                            <th>Humidity</th>
+                            <th>Visibility</th>
+                            <th>Wind Speed</th>
+                            <th>Road Condition</th>
+                            <th>Risk Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for weather in weather_data %}
+                        <tr>
+                            <td>{{ weather.latitude|round(4) }}, {{ weather.longitude|round(4) }}</td>
+                            <td>{{ weather.season|capitalize }}</td>
+                            <td>{{ weather.weatherCondition|capitalize }}</td>
+                            <td>{{ weather.averageTemperature }}°C</td>
+                            <td>{{ weather.humidity }}%</td>
+                            <td>{{ weather.visibilityKm }} km</td>
+                            <td>{{ weather.windSpeedKmph }} km/h</td>
+                            <td>{{ weather.roadSurfaceCondition|capitalize }}</td>
+                            <td>
+                                <span class="risk-badge risk-{% if weather.riskScore >= 8 %}critical{% elif weather.riskScore >= 6 %}high{% elif weather.riskScore >= 4 %}medium{% else %}low{% endif %}">
+                                    {{ weather.riskScore }}/10
+                                </span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Traffic Data -->
+    {% if traffic_data %}
+    <div class="data-section">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-traffic-light text-warning"></i> Traffic Analysis</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Congestion Level</th>
+                            <th>Average Speed</th>
+                            <th>Free Flow Speed</th>
+                            <th>Peak Traffic</th>
+                            <th>Risk Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for traffic in traffic_data %}
+                        <tr>
+                            <td>{{ traffic.latitude|round(4) }}, {{ traffic.longitude|round(4) }}</td>
+                            <td>
+                                <span class="badge bg-{% if traffic.congestionLevel == 'heavy' %}danger{% elif traffic.congestionLevel == 'moderate' %}warning{% elif traffic.congestionLevel == 'light' %}info{% else %}success{% endif %}">
+                                    {{ traffic.congestionLevel|capitalize }}
+                                </span>
+                            </td>
+                            <td>{{ traffic.averageSpeedKmph }} km/h</td>
+                            <td>{{ traffic.freeFlowSpeedKmph }} km/h</td>
+                            <td>{{ traffic.peakHourTrafficCount }} vehicles/hour</td>
+                            <td>
+                                <span class="risk-badge risk-{% if traffic.riskScore >= 8 %}critical{% elif traffic.riskScore >= 6 %}high{% elif traffic.riskScore >= 4 %}medium{% else %}low{% endif %}">
+                                    {{ traffic.riskScore }}/10
+                                </span>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- API Usage Logs -->
+    <div class="data-section">
+        <div class="data-section-header" onclick="toggleSection(this)">
+            <h5 class="mb-0"><i class="fas fa-exchange-alt text-secondary"></i> API Usage Logs</h5>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+        <div class="data-section-body">
+            <div class="table-responsive">
+                <table class="table table-hover data-table">
+                    <thead>
+                        <tr>
+                            <th>API</th>
+                            <th>Endpoint</th>
+                            <th>Status</th>
+                            <th>Response Time</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in api_logs %}
+                        <tr>
+                            <td>
+                                <span class="badge bg-secondary">{{ log.api_name|upper }}</span>
+                            </td>
+                            <td>{{ log.endpoint[:80] }}{% if log.endpoint|length > 80 %}...{% endif %}</td>
+                            <td>
+                                <span class="badge bg-{% if log.status_code == 200 %}success{% else %}danger{% endif %}">
+                                    {{ log.status_code }}
+                                </span>
+                            </td>
+                            <td>{{ log.response_time }}ms</td>
+                            <td>{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Download Section -->
+    <div class="download-section">
+        <h5>Export Options</h5>
+        <div class="row">
+            <div class="col-md-3">
+                <button class="btn btn-success w-100" onclick="exportToExcel()">
+                    <i class="fas fa-file-excel"></i> Export to Excel
+                </button>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-primary w-100" onclick="exportToJSON()">
+                    <i class="fas fa-file-code"></i> Export to JSON
+                </button>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-info w-100" onclick="exportToKML()">
+                    <i class="fas fa-globe"></i> Export to KML
+                </button>
+            </div>
+            <div class="col-md-3">
+                <button class="btn btn-warning w-100" onclick="printRoute()">
+                    <i class="fas fa-print"></i> Print Summary
+                </button>
+            </div>
+        </div>
+    </div>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.4.1/leaflet.markercluster.js"></script>
+<script>
+// Route data from backend
+const routeData = {{ route.routePoints|tojson }};
+const sharpTurns = {{ analysis_data.sharp_turns|tojson }};
+const blindSpots = {{ analysis_data.blind_spots|tojson }};
+const emergencyServices = {{ analysis_data.emergency_services|tojson }};
+const accidentAreas = {{ analysis_data.accident_areas|tojson }};
+const roadConditions = {{ analysis_data.road_conditions|tojson }};
+const networkCoverage = {{ analysis_data.network_coverage|tojson }};
+const ecoZones = {{ analysis_data.eco_zones|tojson }};
+
+// Initialize map
+let map;
+let routeLine;
+let layers = {
+    route: null,
+    sharpTurns: L.markerClusterGroup(),
+    blindSpots: L.markerClusterGroup(),
+    emergency: L.markerClusterGroup(),
+    accident: L.markerClusterGroup(),
+    ecoZones: L.markerClusterGroup(),
+    network: L.markerClusterGroup(),
+    roadConditions: L.markerClusterGroup()
+};
+
+// Initialize the map
+function initMap() {
+    // Create map
+    map = L.map('routeMap').setView([routeData[0].latitude, routeData[0].longitude], 10);
+    
+    // Add tile layer
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+    
+    // Draw route line
+    const routeCoords = routeData.map(point => [point.latitude, point.longitude]);
+    layers.route = L.polyline(routeCoords, {
+        color: '#2196F3',
+        weight: 4,
+        opacity: 0.8
+    }).addTo(map);
+    
+    // Add start and end markers
+    L.marker([routeData[0].latitude, routeData[0].longitude], {
+        icon: createCustomIcon('START', '#4CAF50')
+    }).addTo(map).bindPopup('<h6>Start Point</h6><p>{{ route.fromAddress }}</p>');
+    
+    L.marker([routeData[routeData.length-1].latitude, routeData[routeData.length-1].longitude], {
+        icon: createCustomIcon('END', '#F44336')
+    }).addTo(map).bindPopup('<h6>End Point</h6><p>{{ route.toAddress }}</p>');
+    
+    // Add all data layers
+    addSharpTurns();
+    addBlindSpots();
+    addEmergencyServices();
+    addAccidentAreas();
+    addEcoZones();
+    addNetworkCoverage();
+    addRoadConditions();
+    
+    // Fit map to route bounds
+    fitMapToRoute();
+    
+    // Setup layer controls
+    setupLayerControls();
+}
+
+// Create custom icon
+function createCustomIcon(text, color) {
+    return L.divIcon({
+        className: 'custom-marker',
+        html: `<div style="background: ${color}; color: white; padding: 5px 10px; border-radius: 20px; font-weight: bold; white-space: nowrap;">${text}</div>`,
+        iconSize: [60, 30],
+        iconAnchor: [30, 15]
+    });
+}
+
+// Add sharp turns to map
+function addSharpTurns() {
+    sharpTurns.forEach(turn => {
+        const marker = L.marker([turn.latitude, turn.longitude], {
+            icon: L.divIcon({
+                className: 'marker-sharp-turn',
+                html: '<i class="fas fa-exclamation-triangle"></i>',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            })
+        });
+        
+        marker.bindPopup(`
+            <div class="popup-content">
+                <h6>Sharp Turn</h6>
+                <p><strong>Angle:</strong> ${turn.turnAngle}°</p>
+                <p><strong>Direction:</strong> ${turn.turnDirection}</p>
+                <p><strong>Risk Score:</strong> ${turn.riskScore}/10</p>
+                <p><strong>Recommended Speed:</strong> ${turn.recommendedSpeed} km/h</p>
+                <p><strong>Action:</strong> ${turn.driverActionRequired}</p>
+            </div>
+        `);
+        
+        layers.sharpTurns.addLayer(marker);
+    });
+    
+    map.addLayer(layers.sharpTurns);
+}
+
+// Add blind spots to map
+function addBlindSpots() {
+    blindSpots.forEach(spot => {
+        const marker = L.marker([spot.latitude, spot.longitude], {
+            icon: L.divIcon({
+                className: 'marker-blind-spot',
+                html: '<i class="fas fa-eye-slash"></i>',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            })
+        });
+        
+        marker.bindPopup(`
+            <div class="popup-content">
+                <h6>Blind Spot</h6>
+                <p><strong>Type:</strong> ${spot.spotType.replace('_', ' ')}</p>
+                <p><strong>Visibility:</strong> ${spot.visibilityDistance}m</p>
+                <p><strong>Risk Score:</strong> ${spot.riskScore}/10</p>
+                <p><strong>Action:</strong> ${spot.driverActionRequired}</p>
+            </div>
+        `);
+        
+        layers.blindSpots.addLayer(marker);
+    });
+    
+    map.addLayer(layers.blindSpots);
+}
+
+// Add emergency services to map
+function addEmergencyServices() {
+    emergencyServices.forEach(service => {
+        const icons = {
+            'hospital': 'fa-hospital',
+            'police': 'fa-shield-alt',
+            'fire_station': 'fa-fire',
+            'mechanic': 'fa-wrench'
+        };
+        
+        const marker = L.marker([service.latitude, service.longitude], {
+            icon: L.divIcon({
+                className: 'marker-emergency',
+                html: `<i class="fas ${icons[service.serviceType] || 'fa-plus'}"></i>`,
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            })
+        });
+        
+        marker.bindPopup(`
+            <div class="popup-content">
+                <h6>${service.serviceType.replace('_', ' ').toUpperCase()}</h6>
+                <p><strong>Name:</strong> ${service.name}</p>
+                <p><strong>Phone:</strong> ${service.phoneNumber}</p>
+                <p><strong>Distance:</strong> ${service.distanceFromRouteKm} km</p>
+                <p><strong>Response Time:</strong> ${service.responseTimeMinutes} min</p>
+            </div>
+        `);
+        
+        layers.emergency.addLayer(marker);
+    });
+    
+    map.addLayer(layers.emergency);
+}
+
+// Add accident prone areas to map
+function addAccidentAreas() {
+    accidentAreas.forEach(area => {
+        const marker = L.marker([area.latitude, area.longitude], {
+            icon: L.divIcon({
+                className: 'marker-accident',
+                html: '<i class="fas fa-car-crash"></i>',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            })
+        });
+        
+        marker.bindPopup(`
+            <div class="popup-content">
+                <h6>Accident Prone Area</h6>
+                <p><strong>Severity:</strong> ${area.severityLevel}</p>
+                <p><strong>Risk Score:</strong> ${area.riskScore}/10</p>
+                <p><strong>Factors:</strong> ${area.contributingFactors.join(', ')}</p>
+            </div>
+        `);
+        
+        layers.accident.addLayer(marker);
+    });
+    
+    map.addLayer(layers.accident);
+}
+
+// Add eco-sensitive zones to map
+function addEcoZones() {
+    ecoZones.forEach(zone => {
+        const marker = L.marker([zone.latitude, zone.longitude], {
+            icon: L.divIcon({
+                className: 'marker-eco-zone',
+                html: '<i class="fas fa-leaf"></i>',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            })
+        });
+        
+        marker.bindPopup(`
+            <div class="popup-content">
+                <h6>Eco-Sensitive Zone</h6>
+                <p><strong>Type:</strong> ${zone.zoneType}</p>
+                <p><strong>Name:</strong> ${zone.name}</p>
+                <p><strong>Severity:</strong> ${zone.severity}</p>
+                <p><strong>Restrictions:</strong> ${zone.restrictions.join(', ')}</p>
+            </div>
+        `);
+        
+        layers.ecoZones.addLayer(marker);
+    });
+    
+    map.addLayer(layers.ecoZones);
+}
+
+// Add network coverage to map
+function addNetworkCoverage() {
+    networkCoverage.forEach(coverage => {
+        if (coverage.isDeadZone) {
+            const marker = L.marker([coverage.latitude, coverage.longitude], {
+                icon: L.divIcon({
+                    className: 'marker-network',
+                    html: '<i class="fas fa-signal" style="color: #f44336;"></i>',
+                    iconSize: [30, 30],
+                    iconAnchor: [15, 15]
+                })
+            });
+            
+            marker.bindPopup(`
+                <div class="popup-content">
+                    <h6>Network Dead Zone</h6>
+                    <p><strong>Signal:</strong> ${coverage.signalStrength}/10</p>
+                    <p><strong>Risk:</strong> ${coverage.communicationRisk}</p>
+                    <p><strong>Alternative:</strong> ${coverage.alternativeMethods.join(', ') || 'None'}</p>
+                </div>
+            `);
+            
+            layers.network.addLayer(marker);
+        }
+    });
+    
+    map.removeLayer(layers.network); // Hidden by default
+}
+
+// Add road conditions to map
+function addRoadConditions() {
+    roadConditions.forEach(condition => {
+        if (condition.riskScore >= 6) {
+            const marker = L.marker([condition.latitude, condition.longitude], {
+                icon: L.divIcon({
+                    className: 'marker-road',
+                    html: '<i class="fas fa-road" style="color: #ff9800;"></i>',
+                    iconSize: [30, 30],
+                    iconAnchor: [15, 15]
+                })
+            });
+            
+            marker.bindPopup(`
+                <div class="popup-content">
+                    <h6>Poor Road Condition</h6>
+                    <p><strong>Surface:</strong> ${condition.surfaceQuality}</p>
+                    <p><strong>Type:</strong> ${condition.roadType}</p>
+                    <p><strong>Risk Score:</strong> ${condition.riskScore}/10</p>
+                </div>
+            `);
+            
+            layers.roadConditions.addLayer(marker);
+        }
+    });
+    
+    map.removeLayer(layers.roadConditions); // Hidden by default
+}
+
+// Setup layer controls
+function setupLayerControls() {
+    document.getElementById('toggleRoute').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.route);
+        } else {
+            map.removeLayer(layers.route);
+        }
+    });
+    
+    document.getElementById('toggleSharpTurns').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.sharpTurns);
+        } else {
+            map.removeLayer(layers.sharpTurns);
+        }
+    });
+    
+    document.getElementById('toggleBlindSpots').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.blindSpots);
+        } else {
+            map.removeLayer(layers.blindSpots);
+        }
+    });
+    
+    document.getElementById('toggleEmergency').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.emergency);
+        } else {
+            map.removeLayer(layers.emergency);
+        }
+    });
+    
+    document.getElementById('toggleAccident').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.accident);
+        } else {
+            map.removeLayer(layers.accident);
+        }
+    });
+    
+    document.getElementById('toggleEcoZones').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.ecoZones);
+        } else {
+            map.removeLayer(layers.ecoZones);
+        }
+    });
+    
+    document.getElementById('toggleNetwork').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.network);
+        } else {
+            map.removeLayer(layers.network);
+        }
+    });
+    
+    document.getElementById('toggleRoadConditions').addEventListener('change', function() {
+        if (this.checked) {
+            map.addLayer(layers.roadConditions);
+        } else {
+            map.removeLayer(layers.roadConditions);
+        }
+    });
+}
+
+// Fit map to route bounds
+function fitMapToRoute() {
+    const bounds = L.latLngBounds(routeData.map(point => [point.latitude, point.longitude]));
+    map.fitBounds(bounds, { padding: [50, 50] });
+}
+
+// Focus on specific location
+function focusOnMap(lat, lng) {
+    map.setView([lat, lng], 16);
+    
+    // Flash a temporary marker
+    const tempMarker = L.circleMarker([lat, lng], {
+        radius: 20,
+        color: '#FF0000',
+        fillOpacity: 0.5
+    }).addTo(map);
+    
+    setTimeout(() => map.removeLayer(tempMarker), 2000);
+}
+
+// Toggle data sections
+function toggleSection(header) {
+    const section = header.parentElement;
+    section.classList.toggle('active');
+    const icon = header.querySelector('.fa-chevron-down, .fa-chevron-up');
+    
+    if (section.classList.contains('active')) {
+        icon.classList.remove('fa-chevron-down');
+        icon.classList.add('fa-chevron-up');
+    } else {
+        icon.classList.remove('fa-chevron-up');
+        icon.classList.add('fa-chevron-down');
+    }
+}
+
+// Export functions
+function exportRouteData() {
+    const data = {
+        route: {{ route|tojson }},
+        analysis: {{ analysis_data|tojson }}
+    };
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `route_${routeData.routeName}_complete_data.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+function exportToExcel() {
+    // This would require a library like SheetJS
+    alert('Excel export functionality would be implemented with SheetJS library');
+}
+
+function exportToJSON() {
+    exportRouteData();
+}
+
+function exportToKML() {
+    // Generate KML file
+    let kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+    <name>Route ${routeData.routeName}</name>
+    <Placemark>
+        <name>Route Path</name>
+        <LineString>
+            <coordinates>`;
+    
+    routeData.forEach(point => {
+        kml += `\n${point.longitude},${point.latitude},0`;
+    });
+    
+    kml += `
+            </coordinates>
+        </LineString>
+    </Placemark>
+</Document>
+</kml>`;
+    
+    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `route_${routeData.routeName}.kml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+function printRoute() {
+    window.print();
+}
+
+// Initialize map when page loads
+document.addEventListener('DOMContentLoaded', initMap);
+</script>
 {% endblock %}

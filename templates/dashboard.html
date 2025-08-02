@@ -52,15 +52,23 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Routes</h5>
-                <a href="{{ url_for('upload') }}" class="btn btn-primary btn-sm">
-                    <i class="fas fa-upload"></i> Upload CSV
-                </a>
+                <div>
+                    <a href="{{ url_for('upload') }}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-upload"></i> Upload CSV
+                    </a>
+                    <button class="btn btn-danger btn-sm" id="deleteSelectedBtn" style="display: none;">
+                        <i class="fas fa-trash"></i> Delete Selected
+                    </button>
+                </div>
             </div>
             <div class="card-body">
                 <div class="table-responsive">
                     <table class="table table-hover">
                         <thead>
                             <tr>
+                                <th>
+                                    <input type="checkbox" id="selectAllCheckbox">
+                                </th>
                                 <th>Route Name</th>
                                 <th>From</th>
                                 <th>To</th>
@@ -74,15 +82,28 @@
                         <tbody>
                             {% for route in routes %}
                             <tr>
-                                <td>{{ route.route_name }}</td>
-                                <td>{{ route.from_code }}</td>
-                                <td>{{ route.to_code }}</td>
-                                <td>{{ route.total_distance }} km</td>
+                                <td>
+                                    <input type="checkbox" class="route-checkbox" value="{{ route._id }}">
+                                </td>
+                                <td>{{ route.routeName or route.route_name or 'N/A' }}</td>
+                                <td>
+                                    {{ route.fromAddress or route.from_address or route.fromCode or route.from_code or 'N/A' }}
+                                    <br>
+                                    <small class="text-muted">({{ route.fromCode or route.from_code or '' }})</small>
+                                </td>
+                                <td>
+                                    {{ route.toAddress or route.to_address or route.toCode or route.to_code or 'N/A' }}
+                                    <br>
+                                    <small class="text-muted">({{ route.toCode or route.to_code or '' }})</small>
+                                </td>
+                                <td>{{ route.totalDistance or route.total_distance or 0 }} km</td>
                                 <td>
                                     {% if route.processing_status == 'completed' %}
                                         <span class="badge bg-success">Completed</span>
                                     {% elif route.processing_status == 'processing' %}
-                                        <span class="badge bg-primary">Processing</span>
+                                        <span class="badge bg-primary">
+                                            <i class="fas fa-spinner fa-spin"></i> Processing
+                                        </span>
                                     {% elif route.processing_status == 'failed' %}
                                         <span class="badge bg-danger">Failed</span>
                                     {% else %}
@@ -90,9 +111,10 @@
                                     {% endif %}
                                 </td>
                                 <td>
-                                    {% if route.risk_scores.risk_level %}
+                                    {% if route.risk_scores and route.risk_scores.risk_level %}
                                         <span class="badge bg-{% if route.risk_scores.risk_level == 'CRITICAL' %}danger{% elif route.risk_scores.risk_level == 'HIGH' %}warning{% elif route.risk_scores.risk_level == 'MEDIUM' %}info{% else %}success{% endif %}">
                                             {{ route.risk_scores.risk_level }}
+                                            ({{ route.risk_scores.overall or 0 }}/10)
                                         </span>
                                     {% else %}
                                         <span class="badge bg-secondary">N/A</span>
@@ -101,7 +123,7 @@
                                 <td>
                                     {% if route.pdf_generated %}
                                         <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
-                                           class="btn btn-sm btn-outline-primary">
+                                           class="btn btn-sm btn-outline-primary" title="Download PDF">
                                             <i class="fas fa-file-pdf"></i>
                                         </a>
                                     {% else %}
@@ -109,16 +131,30 @@
                                     {% endif %}
                                 </td>
                                 <td>
-                                    <a href="{{ url_for('route_detail', route_id=route._id) }}" 
-                                       class="btn btn-sm btn-info">
-                                        <i class="fas fa-eye"></i> View
-                                    </a>
-                                    {% if route.processing_status == 'completed' and not route.pdf_generated %}
-                                        <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
-                                           class="btn btn-sm btn-success">
-                                            <i class="fas fa-file-pdf"></i> Generate PDF
+                                    <div class="btn-group" role="group">
+                                        <a href="{{ url_for('route_detail', route_id=route._id) }}" 
+                                           class="btn btn-sm btn-info" title="View Details">
+                                            <i class="fas fa-eye"></i>
                                         </a>
-                                    {% endif %}
+                                        {% if route.processing_status == 'completed' and not route.pdf_generated %}
+                                            <a href="{{ url_for('generate_pdf', route_id=route._id) }}" 
+                                               class="btn btn-sm btn-success" title="Generate PDF">
+                                                <i class="fas fa-file-pdf"></i>
+                                            </a>
+                                        {% endif %}
+                                        {% if route.processing_status == 'failed' or route.processing_status == 'pending' %}
+                                            <button class="btn btn-sm btn-warning reprocess-btn" 
+                                                    data-route-id="{{ route._id }}" title="Reprocess">
+                                                <i class="fas fa-redo"></i>
+                                            </button>
+                                        {% endif %}
+                                        <button class="btn btn-sm btn-danger delete-btn" 
+                                                data-route-id="{{ route._id }}" 
+                                                data-route-name="{{ route.routeName or route.route_name }}"
+                                                title="Delete">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                             {% endfor %}
@@ -126,7 +162,19 @@
                     </table>
                 </div>
                 
+                {% if routes|length == 0 %}
+                <div class="text-center py-5">
+                    <i class="fas fa-route fa-3x text-muted mb-3"></i>
+                    <h5 class="text-muted">No routes found</h5>
+                    <p class="text-muted">Upload a CSV file to get started</p>
+                    <a href="{{ url_for('upload') }}" class="btn btn-primary">
+                        <i class="fas fa-upload"></i> Upload Routes
+                    </a>
+                </div>
+                {% endif %}
+                
                 <!-- Pagination -->
+                {% if stats.total > 20 %}
                 <nav aria-label="Route pagination">
                     <ul class="pagination justify-content-center">
                         <li class="page-item {% if page == 1 %}disabled{% endif %}">
@@ -135,13 +183,131 @@
                         <li class="page-item active">
                             <span class="page-link">Page {{ page }}</span>
                         </li>
-                        <li class="page-item">
+                        <li class="page-item {% if routes|length < 20 %}disabled{% endif %}">
                             <a class="page-link" href="{{ url_for('dashboard', page=page+1) }}">Next</a>
                         </li>
                     </ul>
                 </nav>
+                {% endif %}
             </div>
         </div>
     </div>
 </div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Confirm Delete</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete <strong id="deleteRouteName"></strong>?</p>
+                <p class="text-danger">This will permanently delete the route and all associated data.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    let routeToDelete = null;
+    let selectedRoutes = [];
+    
+    // Handle delete button click
+    $('.delete-btn').on('click', function() {
+        routeToDelete = $(this).data('route-id');
+        const routeName = $(this).data('route-name') || 'this route';
+        $('#deleteRouteName').text(routeName);
+        $('#deleteModal').modal('show');
+    });
+    
+    // Confirm delete
+    $('#confirmDeleteBtn').on('click', function() {
+        if (routeToDelete) {
+            $.ajax({
+                url: `/api/routes/${routeToDelete}`,
+                method: 'DELETE',
+                success: function(response) {
+                    location.reload();
+                },
+                error: function(xhr) {
+                    alert('Error deleting route: ' + (xhr.responseJSON?.message || 'Unknown error'));
+                }
+            });
+        }
+        $('#deleteModal').modal('hide');
+    });
+    
+    // Handle reprocess button
+    $('.reprocess-btn').on('click', function() {
+        const routeId = $(this).data('route-id');
+        const btn = $(this);
+        
+        btn.prop('disabled', true);
+        btn.html('<i class="fas fa-spinner fa-spin"></i>');
+        
+        $.ajax({
+            url: `/api/process_route/${routeId}`,
+            method: 'POST',
+            success: function(response) {
+                location.reload();
+            },
+            error: function(xhr) {
+                alert('Error reprocessing route: ' + (xhr.responseJSON?.message || 'Unknown error'));
+                btn.prop('disabled', false);
+                btn.html('<i class="fas fa-redo"></i>');
+            }
+        });
+    });
+    
+    // Handle checkbox selection
+    $('#selectAllCheckbox').on('change', function() {
+        $('.route-checkbox').prop('checked', $(this).is(':checked'));
+        updateDeleteSelectedButton();
+    });
+    
+    $('.route-checkbox').on('change', function() {
+        updateDeleteSelectedButton();
+    });
+    
+    function updateDeleteSelectedButton() {
+        selectedRoutes = [];
+        $('.route-checkbox:checked').each(function() {
+            selectedRoutes.push($(this).val());
+        });
+        
+        if (selectedRoutes.length > 0) {
+            $('#deleteSelectedBtn').show();
+        } else {
+            $('#deleteSelectedBtn').hide();
+        }
+    }
+    
+    // Handle bulk delete
+    $('#deleteSelectedBtn').on('click', function() {
+        if (confirm(`Are you sure you want to delete ${selectedRoutes.length} routes?`)) {
+            $.ajax({
+                url: '/api/routes/bulk-delete',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ route_ids: selectedRoutes }),
+                success: function(response) {
+                    location.reload();
+                },
+                error: function(xhr) {
+                    alert('Error deleting routes: ' + (xhr.responseJSON?.message || 'Unknown error'));
+                }
+            });
+        }
+    });
+});
+</script>
 {% endblock %}

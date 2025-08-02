@@ -134,6 +134,31 @@
                                     <p class="mb-0 font-weight-bold" id="processingSpeed">0 routes/min</p>
                                 </div>
                             </div>
+                            
+                            <!-- API Call Statistics -->
+                            <div class="row mt-3">
+                                <div class="col-12">
+                                    <h6>API Usage</h6>
+                                    <div class="row text-center">
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Weather API</small>
+                                            <p class="mb-0" id="weatherApiCalls">0</p>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Traffic API</small>
+                                            <p class="mb-0" id="trafficApiCalls">0</p>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Overpass API</small>
+                                            <p class="mb-0" id="overpassApiCalls">0</p>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Cache Hits</small>
+                                            <p class="mb-0" id="cacheHits">0</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     
@@ -168,6 +193,25 @@
                         </div>
                     </div>
                 </div>
+                
+                <!-- Error Section (Hidden by default) -->
+                <div id="errorSection" style="display: none;" class="mt-4">
+                    <div class="alert alert-danger">
+                        <h5 class="alert-heading">
+                            <i class="fas fa-exclamation-triangle"></i> Processing Error
+                        </h5>
+                        <hr>
+                        <p id="errorMessage"></p>
+                        <div class="mt-3">
+                            <button id="retryBtn" class="btn btn-warning">
+                                <i class="fas fa-redo"></i> Retry Upload
+                            </button>
+                            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+                                <i class="fas fa-arrow-left"></i> Back to Dashboard
+                            </a>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -178,6 +222,7 @@
 <script>
 $(document).ready(function() {
     let uploadInterval;
+    let apiStatsInterval;
     let startTime;
     let processedCount = 0;
     let totalCount = 0;
@@ -200,11 +245,18 @@ $(document).ready(function() {
         $('#uploadForm').hide();
         $('#progressSection').show();
         $('#resultsSection').hide();
+        $('#errorSection').hide();
         
         // Initialize progress tracking
         startTime = new Date();
         processedCount = 0;
         totalCount = 0;
+        
+        // Reset API stats
+        $('#weatherApiCalls').text('0');
+        $('#trafficApiCalls').text('0');
+        $('#overpassApiCalls').text('0');
+        $('#cacheHits').text('0');
         
         // Start upload
         $.ajax({
@@ -221,6 +273,9 @@ $(document).ready(function() {
                     
                     // Start polling for progress
                     uploadInterval = setInterval(checkUploadProgress, 1000);
+                    
+                    // Start API stats polling
+                    apiStatsInterval = setInterval(updateApiStats, 5000);
                     
                     // Start time tracking
                     setInterval(updateTimeStats, 1000);
@@ -246,13 +301,43 @@ $(document).ready(function() {
             success: function(response) {
                 updateProgress(response);
                 
-                if (response.status === 'completed' || response.status === 'failed') {
+                if (response.status === 'completed') {
                     clearInterval(uploadInterval);
+                    clearInterval(apiStatsInterval);
                     showResults(response);
+                } else if (response.status === 'failed') {
+                    clearInterval(uploadInterval);
+                    clearInterval(apiStatsInterval);
+                    showError(response.error || 'Processing failed');
                 }
             },
             error: function() {
                 console.error('Failed to get progress update');
+            }
+        });
+    }
+    
+    // Update API statistics
+    function updateApiStats() {
+        $.ajax({
+            url: '/api/statistics',
+            method: 'GET',
+            success: function(response) {
+                if (response.api_call_counts) {
+                    response.api_call_counts.forEach(function(api) {
+                        switch(api._id) {
+                            case 'visualcrossing':
+                                $('#weatherApiCalls').text(api.count);
+                                break;
+                            case 'tomtom':
+                                $('#trafficApiCalls').text(api.count);
+                                break;
+                            case 'overpass':
+                                $('#overpassApiCalls').text(api.count);
+                                break;
+                        }
+                    });
+                }
             }
         });
     }
@@ -277,14 +362,15 @@ $(document).ready(function() {
             
             // Update route progress based on stage
             const routeStages = {
-                'analyzing_turns': 20,
-                'analyzing_blind_spots': 40,
-                'fetching_services': 60,
+                'processing': 10,
+                'analyzing_geometry': 20,
+                'fetching_services': 40,
+                'analyzing_conditions': 60,
                 'calculating_risks': 80,
                 'saving_data': 100
             };
             
-            const routeProgress = routeStages[data.current_route.stage] || 0;
+            const routeProgress = routeStages[data.current_route.stage] || 50;
             $('#routeProgressBar').css('width', routeProgress + '%');
             $('#routeProgressText').text(data.current_route.stage_text || 'Processing...');
         }
@@ -381,6 +467,9 @@ $(document).ready(function() {
             <div class="mt-3">
                 <strong>Total Processing Time:</strong> ${$('#elapsedTime').text()}
             </div>
+            <div class="mt-2">
+                <strong>Average Speed:</strong> ${$('#processingSpeed').text()}
+            </div>
         `;
         
         $('#finalStats').html(finalStats);
@@ -388,31 +477,27 @@ $(document).ready(function() {
     
     // Show error
     function showError(message) {
-        $('#uploadForm').show();
+        $('#uploadForm').hide();
         $('#progressSection').hide();
         $('#resultsSection').hide();
+        $('#errorSection').show();
         
-        const alertHtml = `
-            <div class="alert alert-danger alert-dismissible fade show" role="alert">
-                <i class="fas fa-exclamation-triangle"></i> ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            </div>
-        `;
-        
-        $('#uploadForm').before(alertHtml);
+        $('#errorMessage').text(message);
     }
     
     // Cancel button
     $('#cancelBtn').on('click', function() {
         if (confirm('Are you sure you want to cancel the upload?')) {
             clearInterval(uploadInterval);
+            clearInterval(apiStatsInterval);
             
             if (currentUploadId) {
                 $.ajax({
                     url: `/api/upload/cancel/${currentUploadId}`,
                     method: 'POST',
                     success: function() {
-                        location.reload();
+                        addLogEntry('warning', 'Upload cancelled by user');
+                        setTimeout(() => location.reload(), 2000);
                     }
                 });
             } else {
@@ -423,6 +508,11 @@ $(document).ready(function() {
     
     // Upload another button
     $('#uploadAnotherBtn').on('click', function() {
+        location.reload();
+    });
+    
+    // Retry button
+    $('#retryBtn').on('click', function() {
         location.reload();
     });
     
