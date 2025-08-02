@@ -18,7 +18,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from google_maps_image_downloader import GoogleMapsImageDownloader
-
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Rectangle
+import numpy as np
 # Third-party imports
 try:
     from pymongo import MongoClient
@@ -566,9 +570,182 @@ class HPCLDynamicPDFGenerator:
             return self.colors.WARNING
         else:
             return self.colors.SUCCESS
+    
 
+    def generate_overpass_route_map(self, route_data: Dict[str, Any]) -> tuple:
+        """Generate route map using Overpass API and matplotlib instead of Google Maps"""
+        try:
+            route = route_data['route']
+            collections = route_data['collections']
+            
+            # Create a figure for the map
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Get route points
+            route_points = route.get('routePoints', [])
+            if not route_points:
+                return None, None
+                
+            # Extract coordinates
+            lats = [p['latitude'] for p in route_points]
+            lons = [p['longitude'] for p in route_points]
+            
+            # Plot the route line
+            ax.plot(lons, lats, 'b-', linewidth=3, label='Route', zorder=1)
+            
+            # Plot start and end points
+            ax.scatter(lons[0], lats[0], c='green', s=200, marker='o', 
+                    edgecolors='darkgreen', linewidth=2, label='Start', zorder=3)
+            ax.scatter(lons[-1], lats[-1], c='red', s=200, marker='o', 
+                    edgecolors='darkred', linewidth=2, label='End', zorder=3)
+            
+            # Add text labels for start and end
+            ax.annotate('START', (lons[0], lats[0]), xytext=(5, 5), 
+                    textcoords='offset points', fontsize=8, fontweight='bold')
+            ax.annotate('END', (lons[-1], lats[-1]), xytext=(5, 5), 
+                    textcoords='offset points', fontsize=8, fontweight='bold')
+            
+            # Plot critical points
+            self._add_critical_points_to_map(ax, collections)
+            
+            # Set map bounds with padding
+            lat_range = max(lats) - min(lats)
+            lon_range = max(lons) - min(lons)
+            padding = max(lat_range, lon_range) * 0.1
+            
+            ax.set_xlim(min(lons) - padding, max(lons) + padding)
+            ax.set_ylim(min(lats) - padding, max(lats) + padding)
+            
+            # Add grid and labels
+            ax.grid(True, alpha=0.3)
+            ax.set_xlabel('Longitude', fontsize=10)
+            ax.set_ylabel('Latitude', fontsize=10)
+            ax.set_title(f"Route: {route.get('fromAddress', 'Start')} to {route.get('toAddress', 'End')}", 
+                        fontsize=12, fontweight='bold')
+            
+            # Add legend
+            ax.legend(loc='best', fontsize=8)
+            
+            # Save the map
+            map_filename = f"route_map_{route['_id']}.png"
+            map_path = os.path.join(tempfile.gettempdir(), map_filename)
+            plt.savefig(map_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            # Generate OpenStreetMap link
+            center_lat = (min(lats) + max(lats)) / 2
+            center_lon = (min(lons) + max(lons)) / 2
+            osm_link = f"https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
+            
+            return map_path, osm_link
+            
+        except Exception as e:
+            logger.error(f"Error generating Overpass map: {e}")
+            return None, None
+
+    def _add_critical_points_to_map(self, ax, collections: Dict[str, List]):
+        """Add critical points to the matplotlib map"""
+        
+        # Sharp turns
+        sharp_turns = collections.get('sharp_turns', [])
+        for turn in sharp_turns:
+            if self.safe_float(turn.get('riskScore', 0)) >= 7:
+                lat = self.safe_float(turn.get('latitude', 0))
+                lon = self.safe_float(turn.get('longitude', 0))
+                ax.scatter(lon, lat, c='orange', s=50, marker='^', 
+                        edgecolors='darkorange', linewidth=1, zorder=2)
+        
+        # Blind spots
+        blind_spots = collections.get('blind_spots', [])
+        for spot in blind_spots:
+            if self.safe_float(spot.get('riskScore', 0)) >= 7:
+                lat = self.safe_float(spot.get('latitude', 0))
+                lon = self.safe_float(spot.get('longitude', 0))
+                ax.scatter(lon, lat, c='red', s=50, marker='s', 
+                        edgecolors='darkred', linewidth=1, zorder=2)
+        
+        # Emergency services
+        emergency_services = collections.get('emergency_services', [])
+        
+        # Hospitals
+        hospitals = [s for s in emergency_services if s.get('serviceType') == 'hospital']
+        for hospital in hospitals[:5]:  # Limit to 5
+            lat = self.safe_float(hospital.get('latitude', 0))
+            lon = self.safe_float(hospital.get('longitude', 0))
+            ax.scatter(lon, lat, c='blue', s=40, marker='H', 
+                    edgecolors='darkblue', linewidth=1, zorder=2)
+        
+        # Police stations
+        police = [s for s in emergency_services if s.get('serviceType') == 'police']
+        for station in police[:5]:  # Limit to 5
+            lat = self.safe_float(station.get('latitude', 0))
+            lon = self.safe_float(station.get('longitude', 0))
+            ax.scatter(lon, lat, c='purple', s=40, marker='P', 
+                    edgecolors='darkpurple', linewidth=1, zorder=2)
+        
+        # Network dead zones
+        dead_zones = [n for n in collections.get('network_coverage', []) if n.get('isDeadZone', False)]
+        for zone in dead_zones[:5]:  # Limit to 5
+            lat = self.safe_float(zone.get('latitude', 0))
+            lon = self.safe_float(zone.get('longitude', 0))
+            ax.scatter(lon, lat, c='black', s=30, marker='x', 
+                    linewidth=2, zorder=2)
+
+    def generate_osm_tile_map(self, route_data: Dict[str, Any]) -> tuple:
+        """Alternative: Generate map using OpenStreetMap tiles"""
+        try:
+            import folium
+            
+            route = route_data['route']
+            route_points = route.get('routePoints', [])
+            
+            if not route_points:
+                return None, None
+            
+            # Calculate center
+            lats = [p['latitude'] for p in route_points]
+            lons = [p['longitude'] for p in route_points]
+            center_lat = sum(lats) / len(lats)
+            center_lon = sum(lons) / len(lons)
+            
+            # Create folium map
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+            
+            # Add route line
+            route_coords = [[p['latitude'], p['longitude']] for p in route_points]
+            folium.PolyLine(route_coords, color='blue', weight=3, opacity=0.8).add_to(m)
+            
+            # Add start and end markers
+            folium.Marker(
+                [lats[0], lons[0]], 
+                popup='Start', 
+                icon=folium.Icon(color='green', icon='play')
+            ).add_to(m)
+            
+            folium.Marker(
+                [lats[-1], lons[-1]], 
+                popup='End', 
+                icon=folium.Icon(color='red', icon='stop')
+            ).add_to(m)
+            
+            # Save as image
+            map_filename = f"route_map_{route['_id']}.html"
+            map_path = os.path.join(tempfile.gettempdir(), map_filename)
+            m.save(map_path)
+            
+            # Convert HTML to PNG using selenium (if available)
+            png_path = self._convert_folium_to_png(map_path)
+            
+            # Generate link
+            osm_link = f"https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
+            
+            return png_path or map_path, osm_link
+            
+        except ImportError:
+            logger.error("Folium not installed. Using matplotlib fallback.")
+            return self.generate_overpass_route_map(route_data)
     def create_route_map_page(self, canvas_obj, route_data: Dict[str, Any]):
-        """Create Page 3: Route Map with Google Maps API integration - Full Route View"""
+        """Create Page 3: Route Map using OpenStreetMap/Overpass API"""
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "Approved Route Map")
         collections = route_data['collections']
         route = route_data['route']
@@ -580,8 +757,6 @@ class HPCLDynamicPDFGenerator:
         canvas_obj.drawString(self.margin, y_pos, "APPROVED ROUTE MAP")
         y_pos -= 20
         
-    
-
         canvas_obj.setFillColor(self.colors.BLACK)
         canvas_obj.setFont("Helvetica", 10)
         canvas_obj.drawString(self.margin, y_pos, "Comprehensive route visualization showing start/end points, critical turns, emergency services,")
@@ -593,27 +768,27 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 20
         
         try:
-            # Generate Google Maps static image with full route view
-            map_image_path, interactive_link = self.generate_google_maps_route_image(route_data)
+            # Generate route map using Overpass/OSM instead of Google Maps
+            map_image_path, interactive_link = self.generate_overpass_route_map(route_data)
             
             if map_image_path and os.path.exists(map_image_path):
-                # Draw the Google Maps image (larger size for full route)
+                # Draw the map image
                 canvas_obj.drawImage(map_image_path, 40, y_pos - 350, width=520, height=350)
                 
                 # Add route statistics overlay
                 self.add_route_statistics_overlay(canvas_obj, route_data, y_pos - 370)
                 
-                # Add interactive link box
-                self.add_interactive_link_box(canvas_obj, interactive_link, y_pos - 380)
+                # Add interactive link box (now pointing to OSM)
+                self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
                 
                 y_pos -= 390
             else:
-                # Fallback to placeholder if API fails
+                # Fallback to placeholder if map generation fails
                 self.draw_map_placeholder(canvas_obj, route_data, y_pos)
                 y_pos -= 280
                 
         except Exception as e:
-            logger.error(f"Failed to generate Google Maps image: {e}")
+            logger.error(f"Failed to generate map: {e}")
             # Fallback to placeholder
             self.draw_map_placeholder(canvas_obj, route_data, y_pos)
             y_pos -= 280
@@ -621,6 +796,34 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 35
         # Enhanced Map legend with actual counts
         self.add_enhanced_map_legend(canvas_obj, route_data, y_pos)
+
+    def add_osm_link_box(self, canvas_obj, interactive_link: str, y_pos: int):
+        """Add clickable link box for OpenStreetMap"""
+        if not interactive_link:
+            return
+            
+        # Link box
+        canvas_obj.setFillColor(self.colors.INFO)
+        canvas_obj.rect(40, y_pos, 520, 25, fill=1, stroke=1)
+        canvas_obj.setStrokeColor(self.colors.SECONDARY)
+        canvas_obj.rect(40, y_pos, 520, 25, fill=0, stroke=1)
+
+        # Text settings
+        canvas_obj.setFillColor(self.colors.WHITE)
+        canvas_obj.setFont("Helvetica-Bold", 10)
+        canvas_obj.drawString(50, y_pos + 7, "🔗 INTERACTIVE MAP:")
+
+        canvas_obj.setFont("Helvetica", 9)
+        canvas_obj.drawString(180, y_pos + 7, "Click to open route in OpenStreetMap →")
+
+        # Clickable link (full box clickable)
+        canvas_obj.linkURL(interactive_link, (40, y_pos, 560, y_pos + 25))
+
+        # Display shortened link below the box
+        canvas_obj.setFont("Helvetica", 7)
+        canvas_obj.setFillColor(HexColor('#E3F2FD'))
+        short_link = interactive_link[:80] + "..." if len(interactive_link) > 80 else interactive_link
+        canvas_obj.drawString(50, y_pos - 8, short_link)
     
     def add_route_statistics_overlay(self, canvas_obj, route_data: Dict[str, Any], y_pos: int):
         """Add statistics overlay on the map"""
@@ -1484,20 +1687,21 @@ class HPCLDynamicPDFGenerator:
     def collect_all_high_risk_points(self, collections: Dict[str, List], route: Dict) -> List[Dict]:
         """Collect all high-risk points from different collections into a unified list"""
         all_points = []
-        total_distance = route.get('totalDistance', 0)
+        total_distance = self.safe_float(route.get('totalDistance', 0))
         
         # 1. Sharp Turns (risk score >= 7)
         for turn in collections.get('sharp_turns', []):
-            if turn.get('riskScore', 0) >= 7:
-                distance_from_start = turn.get('distanceFromStartKm', 0)
+            risk_score = self.safe_float(turn.get('riskScore', 0))
+            if risk_score >= 7:
+                distance_from_start = self.safe_float(turn.get('distanceFromStartKm', 0))
                 all_points.append({
                     'type': self.get_turn_type_label(turn),
-                    'latitude': turn.get('latitude', 0),
-                    'longitude': turn.get('longitude', 0),
+                    'latitude': self.safe_float(turn.get('latitude', 0)),
+                    'longitude': self.safe_float(turn.get('longitude', 0)),
                     'distance_from_start': distance_from_start,
                     'distance_from_customer': max(0, total_distance - distance_from_start),
-                    'risk_level': self.get_risk_level_text(turn.get('riskScore', 0)),
-                    'risk_score': turn.get('riskScore', 0),
+                    'risk_level': self.get_risk_level_text(risk_score),
+                    'risk_score': risk_score,
                     'speed_limit': self.get_speed_limit_for_turn(turn),
                     'driver_action': self.get_complete_driver_action(turn, 'turn'),
                     'original_data': turn
@@ -1505,16 +1709,17 @@ class HPCLDynamicPDFGenerator:
         
         # 2. Blind Spots (risk score >= 7)
         for spot in collections.get('blind_spots', []):
-            if spot.get('riskScore', 0) >= 7:
-                distance_from_start = spot.get('distanceFromStartKm', 0)
+            risk_score = self.safe_float(spot.get('riskScore', 0))
+            if risk_score >= 7:
+                distance_from_start = self.safe_float(spot.get('distanceFromStartKm', 0))
                 all_points.append({
                     'type': self.get_blind_spot_type_label(spot),
-                    'latitude': spot.get('latitude', 0),
-                    'longitude': spot.get('longitude', 0),
+                    'latitude': self.safe_float(spot.get('latitude', 0)),
+                    'longitude': self.safe_float(spot.get('longitude', 0)),
                     'distance_from_start': distance_from_start,
                     'distance_from_customer': max(0, total_distance - distance_from_start),
-                    'risk_level': self.get_risk_level_text(spot.get('riskScore', 0)),
-                    'risk_score': spot.get('riskScore', 0),
+                    'risk_level': self.get_risk_level_text(risk_score),
+                    'risk_score': risk_score,
                     'speed_limit': self.get_speed_limit_for_blind_spot(spot),
                     'driver_action': self.get_complete_driver_action(spot, 'blind_spot'),
                     'original_data': spot
@@ -1523,21 +1728,19 @@ class HPCLDynamicPDFGenerator:
         # 3. Network Dead Zones
         for zone in collections.get('network_coverage', []):
             if zone.get('isDeadZone', False):
-                distance_from_start = zone.get('distanceFromStartKm', 0)
+                distance_from_start = self.safe_float(zone.get('distanceFromStartKm', 0))
                 all_points.append({
                     'type': 'Network Dead Zone',
-                    'latitude': zone.get('latitude', 0),
-                    'longitude': zone.get('longitude', 0),
+                    'latitude': self.safe_float(zone.get('latitude', 0)),
+                    'longitude': self.safe_float(zone.get('longitude', 0)),
                     'distance_from_start': distance_from_start,
                     'distance_from_customer': max(0, total_distance - distance_from_start),
                     'risk_level': self.get_dead_zone_severity(zone),
-                    'risk_score': zone.get('communicationRisk', 5),
+                    'risk_score': self.safe_float(zone.get('communicationRisk', 5)),
                     'speed_limit': 'Normal',
                     'driver_action': 'Inform control room before entering, use alternative communication',
                     'original_data': zone
                 })
-        
-        # 4. REMOVED: Wildlife/Eco-sensitive zones collection
         
         return all_points
 
@@ -2449,7 +2652,7 @@ class HPCLDynamicPDFGenerator:
             unique_medical_facilities = self.remove_duplicate_coordinates(medical_facilities)
 
             medical_data = sorted(
-                [n for n in unique_medical_facilities if n.get("distanceFromStartKm", 0) >= 1.0],
+                [n for n in unique_medical_facilities if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
                 key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             
             headers = ["id", "Facility Name", "Address", "From Supply (km)","From Customer (km)","Coordinates", "Link", "Phone"]
@@ -2508,7 +2711,7 @@ class HPCLDynamicPDFGenerator:
         police_stations = [s for s in all_emergency_services if s.get('serviceType') == 'police']
         if police_stations:
             police_sort_data = sorted(
-                [n for n in police_stations if n.get("distanceFromStartKm", 0) >= 1.0],
+                [n for n in police_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
                 key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             
             police_data = []
@@ -2555,8 +2758,8 @@ class HPCLDynamicPDFGenerator:
         
         if fire_stations:
             fire_sort_data = sorted(
-                [n for n in fire_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                    [n for n in fire_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
+                    key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             fire_data = []
             for i, station in enumerate(fire_sort_data):
                 latitude = station.get('latitude',0)
@@ -2601,8 +2804,8 @@ class HPCLDynamicPDFGenerator:
         
         if fuel_stations:
             fuel_sort_data = sorted(
-                [n for n in fuel_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                    [n for n in fuel_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
+                    key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             fuel_data = []
             for i, station in enumerate(fuel_sort_data):
                 latitude = station.get('latitude',0)
@@ -2646,7 +2849,7 @@ class HPCLDynamicPDFGenerator:
         
         if education_stations:
             education_sort_data = sorted(
-                [n for n in education_stations if n.get("distanceFromStartKm", 0) >= 1.0],
+                [n for n in education_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
                 key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             education_data = []
             for i, station in enumerate(education_sort_data):
@@ -2691,8 +2894,8 @@ class HPCLDynamicPDFGenerator:
         
         if food_stations:
             food_sort_data = sorted(
-                [n for n in food_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                    [n for n in food_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
+                    key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             food_data = []
             for i, station in enumerate(food_sort_data):
                 latitude = station.get('latitude',0)
@@ -4938,7 +5141,23 @@ class HPCLDynamicPDFGenerator:
             return default
         except (TypeError, ValueError):
             return default
-    
+    def safe_int(self, value, default=0):
+        """Safely convert value to int"""
+        if value is None:
+            return default
+        
+        try:
+            if isinstance(value, (int, float)):
+                return int(value)
+            
+            if isinstance(value, str):
+                cleaned = ''.join(c for c in value if c.isdigit() or c == '-')
+                if cleaned:
+                    return int(cleaned)
+            
+            return default
+        except (TypeError, ValueError):
+            return default
     def safe_int_conversion(self, value: Any, default: int = 0) -> int:
         """Safely convert value to int"""
         if value is None:
@@ -4960,11 +5179,10 @@ class HPCLDynamicPDFGenerator:
         except (TypeError, ValueError):
             return default
     
-    def ensure_numeric_comparison(self, value1: Any, value2: Any) -> tuple:
+    def ensure_numeric_comparison(self, value1, value2):
         """Ensure both values are numeric for comparison"""
-        # Convert both to float for comparison
-        num1 = self.safe_float_conversion(value1, 0.0)
-        num2 = self.safe_float_conversion(value2, 0.0)
+        num1 = self.safe_float(value1, 0.0)
+        num2 = self.safe_float(value2, 0.0)
         return num1, num2
     def create_blind_spots_analysis_page(self, canvas_obj, route_data):   
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
@@ -5258,7 +5476,7 @@ class HPCLDynamicPDFGenerator:
         
         static_table_data = []
         for zone in eco_zones:
-            if zone.get('distanceFromStartKm') > 1.0:
+            if self.safe_float(zone.get('distanceFromStartKm', 0)) > 1.0:
                 latitude = zone.get('latitude', 0)
                 longitude = zone.get('longitude', 0)
                 map_link = f"https://www.google.com/maps?q={latitude}%2C{longitude}"
@@ -5681,11 +5899,23 @@ class HPCLDynamicPDFGenerator:
             
         return y_pos
     def safe_float(self, value, default=0.0):
-        """Safely convert value to float, returning default if conversion fails"""
+        """Safely convert value to float, handling various input types"""
+        if value is None:
+            return default
+        
         try:
-            if value is None:
-                return default
-            return float(value)
+            # If it's already a number, return it
+            if isinstance(value, (int, float)):
+                return float(value)
+            
+            # If it's a string, try to convert
+            if isinstance(value, str):
+                # Remove any non-numeric characters except . and -
+                cleaned = ''.join(c for c in value if c.isdigit() or c in '.-')
+                if cleaned:
+                    return float(cleaned)
+            
+            return default
         except (TypeError, ValueError):
             return default
     def generate_pdf_report(self, route_id: str, output_path: str = None) -> str:
