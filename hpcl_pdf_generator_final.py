@@ -7,22 +7,32 @@ Dependencies: pymongo, reportlab, python-dotenv
 """
 
 import os
-import requests
-import io
-from PIL import Image
 import sys
-import tempfile
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, Rectangle
-import numpy as np
+import math
+import io
+import logging
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
-import logging
 from dataclasses import dataclass
-from pathlib import Path
+
+import requests
+import tempfile
+
+from PIL import Image
+from io import BytesIO
+
+import folium
+from folium import plugins
+
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+
+from staticmap import StaticMap, CircleMarker, Line
+
 from google_maps_image_downloader import GoogleMapsImageDownloader
+
+OVERPASS_API_URL = os.getenv('OVERPASS_API_URL', 'http://43.250.40.133:8080/api/interpreter')
 
 # Third-party imports
 try:
@@ -573,11 +583,430 @@ class HPCLDynamicPDFGenerator:
             return self.colors.SUCCESS
     
 
+
+    # Update the create_route_map_page method
+    def create_route_map_page(self, canvas_obj, route_data: Dict[str, Any]):
+        """Create Page 3: Route Map using Overpass API or alternative mapping solutions"""
+        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "Approved Route Map")
+        collections = route_data['collections']
+        route = route_data['route']
+
+        y_pos = self.page_height - 120
+        
+        canvas_obj.setFillColor(self.colors.PRIMARY)
+        canvas_obj.setFont("Helvetica-Bold", 18)
+        canvas_obj.drawString(self.margin, y_pos, "APPROVED ROUTE MAP")
+        y_pos -= 20
+        
+        canvas_obj.setFillColor(self.colors.BLACK)
+        canvas_obj.setFont("Helvetica", 10)
+        canvas_obj.drawString(self.margin, y_pos, "Comprehensive route visualization showing start/end points, critical turns, emergency services,")
+        y_pos -= 20
+        canvas_obj.drawString(self.margin, y_pos, " highway junctions, and potential hazards.")
+        y_pos -= 20
+        
+        try:
+            # Try multiple map generation methods in order of preference
+            map_image_path = None
+            interactive_link = None
+            
+            # Method 1: Try using staticmap library (simplest, no API needed)
+            logger.info("Attempting to generate map using staticmap library...")
+            map_image_path, interactive_link = self.generate_static_map_image(route_data)
+            
+            # Method 2: If staticmap fails, try matplotlib with OSM tiles
+            if not map_image_path or not os.path.exists(map_image_path):
+                logger.info("Staticmap failed, trying matplotlib approach...")
+                map_image_path, interactive_link = self.generate_matplotlib_osm_map(route_data)
+            
+            # Method 3: If still no map, use the existing Overpass implementation
+            if not map_image_path or not os.path.exists(map_image_path):
+                logger.info("Trying Overpass API approach...")
+                map_image_path, interactive_link = self.generate_overpass_route_map(route_data)
+            
+            # Display the map if we have one
+            if map_image_path and os.path.exists(map_image_path):
+                logger.info(f"Map generated successfully: {map_image_path}")
+                # Draw the map image
+                canvas_obj.drawImage(map_image_path, 40, y_pos - 350, width=520, height=350)
+                
+                # Add route statistics overlay
+                self.add_route_statistics_overlay(canvas_obj, route_data, y_pos - 370)
+                
+                # Add interactive link box
+                if interactive_link:
+                    self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
+                
+                y_pos -= 390
+            else:
+                logger.warning("All map generation methods failed, using placeholder")
+                # Fallback to placeholder
+                self.draw_map_placeholder(canvas_obj, route_data, y_pos)
+                y_pos -= 280
+                
+        except Exception as e:
+            logger.error(f"Failed to generate map: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Fallback to placeholder
+            self.draw_map_placeholder(canvas_obj, route_data, y_pos)
+            y_pos -= 280
+        
+        y_pos -= 35
+        # Enhanced Map legend with actual counts
+        self.add_enhanced_map_legend(canvas_obj, route_data, y_pos)
+
+    # Add these new methods for map generation
+
+    def generate_static_map_image(self, route_data: Dict[str, Any]) -> tuple:
+        """Generate a static map image using staticmap library (no API key needed)"""
+        try:
+            from staticmap import StaticMap, CircleMarker, Line
+            
+            route = route_data['route']
+            route_points = route.get('routePoints', [])
+            
+            if not route_points:
+                logger.error("No route points found")
+                return None, None
+            
+            # Create static map instance
+            m = StaticMap(800, 600, padding_x=50, padding_y=50)
+            
+            # Extract coordinates
+            coordinates = [(p['longitude'], p['latitude']) for p in route_points]
+            
+            # Add route line
+            route_line = Line(coordinates, 'blue', 3)
+            m.add_line(route_line)
+            
+            # Add start marker
+            start_marker = CircleMarker(
+                (route_points[0]['longitude'], route_points[0]['latitude']), 
+                'green', 12
+            )
+            m.add_marker(start_marker)
+            
+            # Add end marker
+            end_marker = CircleMarker(
+                (route_points[-1]['longitude'], route_points[-1]['latitude']), 
+                'red', 12
+            )
+            m.add_marker(end_marker)
+            
+            # Add critical points from collections
+            collections = route_data['collections']
+            
+            # Add sharp turns
+            for turn in collections.get('sharp_turns', [])[:10]:
+                if turn.get('riskScore', 0) >= 7:
+                    marker = CircleMarker(
+                        (turn['longitude'], turn['latitude']), 
+                        'orange', 8
+                    )
+                    m.add_marker(marker)
+            
+            # Add blind spots
+            for spot in collections.get('blind_spots', [])[:10]:
+                if spot.get('riskScore', 0) >= 7:
+                    marker = CircleMarker(
+                        (spot['longitude'], spot['latitude']), 
+                        '#FF5722', 8
+                    )
+                    m.add_marker(marker)
+            
+            # Add hospitals
+            for hospital in collections.get('emergency_services', [])[:5]:
+                if hospital.get('serviceType') == 'hospital':
+                    marker = CircleMarker(
+                        (hospital['longitude'], hospital['latitude']), 
+                        'blue', 6
+                    )
+                    m.add_marker(marker)
+            
+            # Render the image
+            image = m.render()
+            
+            # Save to file
+            map_filename = f"route_map_{route['_id']}.png"
+            map_path = os.path.join(tempfile.gettempdir(), map_filename)
+            image.save(map_path)
+            
+            # Generate OSM link
+            center_lat = sum(p['latitude'] for p in route_points) / len(route_points)
+            center_lon = sum(p['longitude'] for p in route_points) / len(route_points)
+            osm_link = f"https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
+            
+            return map_path, osm_link
+            
+        except ImportError:
+            logger.error("staticmap library not installed. Install with: pip install staticmap")
+            return None, None
+        except Exception as e:
+            logger.error(f"Error generating static map: {e}")
+            return None, None
+
+    def generate_matplotlib_osm_map(self, route_data: Dict[str, Any]) -> tuple:
+        """Generate map using matplotlib with improved styling"""
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+            from matplotlib.patches import FancyBboxPatch
+            import numpy as np
+            
+            route = route_data['route']
+            collections = route_data['collections']
+            route_points = route.get('routePoints', [])
+            
+            if not route_points:
+                logger.error("No route points found")
+                return None, None
+            
+            # Create figure with better styling
+            fig, ax = plt.subplots(figsize=(12, 9), dpi=150)
+            
+            # Set background color
+            fig.patch.set_facecolor('white')
+            ax.set_facecolor('#f0f0f0')
+            
+            # Extract coordinates
+            lats = [p['latitude'] for p in route_points]
+            lons = [p['longitude'] for p in route_points]
+            
+            # Plot route with gradient effect
+            points = np.array([lons, lats]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+            
+            # Main route line
+            ax.plot(lons, lats, 'b-', linewidth=4, label='Route Path', 
+                    zorder=2, alpha=0.8, solid_capstyle='round')
+            
+            # Add shadow effect
+            ax.plot(lons, lats, 'gray', linewidth=5, alpha=0.3, 
+                    zorder=1, transform=ax.transData)
+            
+            # Start and end points with labels
+            start_lon, start_lat = lons[0], lats[0]
+            end_lon, end_lat = lons[-1], lats[-1]
+            
+            # Start point
+            ax.scatter(start_lon, start_lat, c='green', s=400, marker='o', 
+                    edgecolors='darkgreen', linewidth=3, label='Start', zorder=5)
+            ax.annotate('START', (start_lon, start_lat), 
+                    xytext=(15, 15), textcoords='offset points',
+                    fontsize=11, fontweight='bold', color='darkgreen',
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgreen", 
+                                edgecolor="darkgreen", alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.3',
+                                    color='darkgreen', lw=2))
+            
+            # End point
+            ax.scatter(end_lon, end_lat, c='red', s=400, marker='o', 
+                    edgecolors='darkred', linewidth=3, label='End', zorder=5)
+            ax.annotate('END', (end_lon, end_lat), 
+                    xytext=(15, -15), textcoords='offset points',
+                    fontsize=11, fontweight='bold', color='darkred',
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", 
+                                edgecolor="darkred", alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=-0.3',
+                                    color='darkred', lw=2))
+            
+            # Add critical points with better styling
+            self._add_styled_critical_points(ax, collections)
+            
+            # Calculate bounds with padding
+            lat_range = max(lats) - min(lats)
+            lon_range = max(lons) - min(lons)
+            padding = max(lat_range, lon_range) * 0.15
+            
+            ax.set_xlim(min(lons) - padding, max(lons) + padding)
+            ax.set_ylim(min(lats) - padding, max(lats) + padding)
+            
+            # Styling
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            ax.set_xlabel('Longitude', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Latitude', fontsize=12, fontweight='bold')
+            
+            # Title with route info
+            route_name = f"{route.get('fromAddress', 'Start')} to {route.get('toAddress', 'End')}"
+            distance = route.get('totalDistance', 0)
+            title = f"Route Map: {route_name}\nTotal Distance: {distance} km"
+            ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+            
+            # Add legend with custom styling
+            legend_elements = [
+                plt.Line2D([0], [0], color='blue', lw=4, label='Route Path'),
+                plt.scatter([], [], c='green', s=200, marker='o', label='Start Point'),
+                plt.scatter([], [], c='red', s=200, marker='o', label='End Point'),
+                plt.scatter([], [], c='orange', s=100, marker='^', label='Sharp Turns'),
+                plt.scatter([], [], c='#FF5722', s=100, marker='s', label='Blind Spots'),
+                plt.scatter([], [], c='blue', s=80, marker='H', label='Hospitals'),
+                plt.scatter([], [], c='purple', s=80, marker='P', label='Police Stations')
+            ]
+            
+            legend = ax.legend(handles=legend_elements, loc='best', 
+                            fontsize=10, frameon=True, shadow=True,
+                            fancybox=True, framealpha=0.9)
+            legend.get_frame().set_facecolor('white')
+            
+            # Add scale bar
+            self._add_scale_bar(ax, lats, lons)
+            
+            # Add north arrow
+            self._add_north_arrow(ax)
+            
+            # Add info box
+            self._add_info_box(ax, route_data)
+            
+            # Save with high quality
+            plt.tight_layout()
+            
+            map_filename = f"route_map_{route['_id']}.png"
+            map_path = os.path.join(tempfile.gettempdir(), map_filename)
+            
+            plt.savefig(map_path, dpi=200, bbox_inches='tight', 
+                    facecolor='white', edgecolor='none')
+            plt.close()
+            
+            logger.info(f"Enhanced map saved successfully: {map_path}")
+            
+            # Generate OSM link
+            center_lat = (min(lats) + max(lats)) / 2
+            center_lon = (min(lons) + max(lons)) / 2
+            osm_link = f"https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
+            
+            return map_path, osm_link
+            
+        except Exception as e:
+            logger.error(f"Error generating matplotlib map: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None, None
+
+    def _add_styled_critical_points(self, ax, collections: Dict[str, List]):
+        """Add critical points to the map with improved styling"""
+        try:
+            # Sharp turns with risk-based sizing
+            sharp_turns = collections.get('sharp_turns', [])
+            for turn in sharp_turns[:15]:  # Limit to first 15
+                risk_score = self.safe_float(turn.get('riskScore', 0))
+                if risk_score >= 6:
+                    lat = self.safe_float(turn.get('latitude', 0))
+                    lon = self.safe_float(turn.get('longitude', 0))
+                    if lat and lon:
+                        # Size based on risk
+                        size = 50 + (risk_score * 10)
+                        color = 'red' if risk_score >= 8 else 'orange'
+                        ax.scatter(lon, lat, c=color, s=size, marker='^', 
+                                edgecolors='black', linewidth=1, zorder=3, alpha=0.8)
+            
+            # Blind spots
+            blind_spots = collections.get('blind_spots', [])
+            for spot in blind_spots[:15]:  # Limit to first 15
+                risk_score = self.safe_float(spot.get('riskScore', 0))
+                if risk_score >= 6:
+                    lat = self.safe_float(spot.get('latitude', 0))
+                    lon = self.safe_float(spot.get('longitude', 0))
+                    if lat and lon:
+                        size = 50 + (risk_score * 10)
+                        ax.scatter(lon, lat, c='#FF5722', s=size, marker='s', 
+                                edgecolors='darkred', linewidth=1, zorder=3, alpha=0.8)
+            
+            # Emergency services with icons
+            emergency_services = collections.get('emergency_services', [])
+            
+            # Hospitals
+            hospitals = [s for s in emergency_services if s.get('serviceType') == 'hospital']
+            for hospital in hospitals[:8]:
+                lat = self.safe_float(hospital.get('latitude', 0))
+                lon = self.safe_float(hospital.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='blue', s=60, marker='H', 
+                            edgecolors='navy', linewidth=1.5, zorder=3)
+            
+            # Police stations
+            police = [s for s in emergency_services if s.get('serviceType') == 'police']
+            for station in police[:8]:
+                lat = self.safe_float(station.get('latitude', 0))
+                lon = self.safe_float(station.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='purple', s=60, marker='P', 
+                            edgecolors='indigo', linewidth=1.5, zorder=3)
+            
+            # Network dead zones
+            dead_zones = [n for n in collections.get('network_coverage', []) if n.get('isDeadZone', False)]
+            for zone in dead_zones[:8]:
+                lat = self.safe_float(zone.get('latitude', 0))
+                lon = self.safe_float(zone.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='black', s=40, marker='x', 
+                            linewidth=2.5, zorder=3)
+                    
+        except Exception as e:
+            logger.warning(f"Error adding critical points to map: {e}")
+
+    def _add_north_arrow(self, ax):
+        """Add a north arrow to the map"""
+        try:
+            # Get current axes limits
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            
+            # Position in top-right corner
+            arrow_x = xlim[1] - (xlim[1] - xlim[0]) * 0.05
+            arrow_y = ylim[1] - (ylim[1] - ylim[0]) * 0.05
+            arrow_length = (ylim[1] - ylim[0]) * 0.05
+            
+            # Draw arrow
+            ax.annotate('N', xy=(arrow_x, arrow_y), xytext=(arrow_x, arrow_y - arrow_length),
+                    ha='center', va='bottom', fontsize=14, fontweight='bold',
+                    arrowprops=dict(arrowstyle='->', lw=2, color='black'))
+            
+        except Exception as e:
+            logger.warning(f"Could not add north arrow: {e}")
+
+    def _add_info_box(self, ax, route_data: Dict[str, Any]):
+        """Add information box to the map"""
+        try:
+            stats = route_data['statistics']
+            risk_level = self.calculate_risk_level(stats['risk_analysis']['avg_risk_score'])
+            
+            info_text = (
+                f"Route Risk Level: {risk_level}\n"
+                f"Critical Points: {stats['risk_analysis']['critical_points']}\n"
+                f"Emergency Services: {stats['safety_metrics']['hospitals']} Hospitals, "
+                f"{stats['safety_metrics']['police_stations']} Police Stations"
+            )
+            
+            # Position in bottom-left
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            
+            box_x = xlim[0] + (xlim[1] - xlim[0]) * 0.02
+            box_y = ylim[0] + (ylim[1] - ylim[0]) * 0.02
+            
+            # Create fancy box
+            props = dict(boxstyle='round,pad=0.5', facecolor='white', 
+                        edgecolor='gray', alpha=0.9)
+            ax.text(box_x, box_y, info_text, fontsize=9, 
+                bbox=props, verticalalignment='bottom')
+            
+        except Exception as e:
+            logger.warning(f"Could not add info box: {e}")
+
+# Update the existing generate_overpass_route_map method to use the OVERPASS_API_URL
     def generate_overpass_route_map(self, route_data: Dict[str, Any]) -> tuple:
-        """Generate route map using matplotlib visualization"""
+        """Generate route map using Overpass API"""
         try:
             route = route_data['route']
             collections = route_data['collections']
+            
+            # Use the OVERPASS_API_URL from environment
+            overpass_url = os.getenv('OVERPASS_API_URL', 'http://43.250.40.133:8080/api/interpreter')
+            logger.info(f"Using Overpass API URL: {overpass_url}")
+            
+            # Rest of your existing generate_overpass_route_map implementation...
+            # (Keep the existing code but make sure to use overpass_url for API calls)
             
             # Create a figure for the map
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -810,7 +1239,7 @@ class HPCLDynamicPDFGenerator:
             logger.error("Folium not installed. Using matplotlib fallback.")
             return self.generate_overpass_route_map(route_data)
     def create_route_map_page(self, canvas_obj, route_data: Dict[str, Any]):
-        """Create Page 3: Route Map using OpenStreetMap/Overpass API"""
+        """Create Page 3: Route Map using Overpass API or alternative mapping solutions"""
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "Approved Route Map")
         collections = route_data['collections']
         route = route_data['route']
@@ -826,34 +1255,52 @@ class HPCLDynamicPDFGenerator:
         canvas_obj.setFont("Helvetica", 10)
         canvas_obj.drawString(self.margin, y_pos, "Comprehensive route visualization showing start/end points, critical turns, emergency services,")
         y_pos -= 20
-
-        canvas_obj.setFillColor(self.colors.BLACK)         
-        canvas_obj.setFont("Helvetica", 10)
         canvas_obj.drawString(self.margin, y_pos, " highway junctions, and potential hazards.")
         y_pos -= 20
         
         try:
-            # Generate route map using Overpass/OSM instead of Google Maps
-            map_image_path, interactive_link = self.generate_overpass_route_map(route_data)
+            # Try multiple map generation methods in order of preference
+            map_image_path = None
+            interactive_link = None
             
+            # Method 1: Try using staticmap library (simplest, no API needed)
+            logger.info("Attempting to generate map using staticmap library...")
+            map_image_path, interactive_link = self.generate_static_map_image(route_data)
+            
+            # Method 2: If staticmap fails, try matplotlib with OSM tiles
+            if not map_image_path or not os.path.exists(map_image_path):
+                logger.info("Staticmap failed, trying matplotlib approach...")
+                map_image_path, interactive_link = self.generate_matplotlib_osm_map(route_data)
+            
+            # Method 3: If still no map, use the existing Overpass implementation
+            if not map_image_path or not os.path.exists(map_image_path):
+                logger.info("Trying Overpass API approach...")
+                map_image_path, interactive_link = self.generate_overpass_route_map(route_data)
+            
+            # Display the map if we have one
             if map_image_path and os.path.exists(map_image_path):
+                logger.info(f"Map generated successfully: {map_image_path}")
                 # Draw the map image
                 canvas_obj.drawImage(map_image_path, 40, y_pos - 350, width=520, height=350)
                 
                 # Add route statistics overlay
                 self.add_route_statistics_overlay(canvas_obj, route_data, y_pos - 370)
                 
-                # Add interactive link box (now pointing to OSM)
-                self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
+                # Add interactive link box
+                if interactive_link:
+                    self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
                 
                 y_pos -= 390
             else:
-                # Fallback to placeholder if map generation fails
+                logger.warning("All map generation methods failed, using placeholder")
+                # Fallback to placeholder
                 self.draw_map_placeholder(canvas_obj, route_data, y_pos)
                 y_pos -= 280
                 
         except Exception as e:
             logger.error(f"Failed to generate map: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             # Fallback to placeholder
             self.draw_map_placeholder(canvas_obj, route_data, y_pos)
             y_pos -= 280
@@ -861,7 +1308,341 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 35
         # Enhanced Map legend with actual counts
         self.add_enhanced_map_legend(canvas_obj, route_data, y_pos)
+    def generate_static_map_image(self, route_data: Dict[str, Any]) -> tuple:
+        """Generate a static map image using staticmap library (no API key needed)"""
+        try:
+            from staticmap import StaticMap, CircleMarker, Line
+            
+            route = route_data['route']
+            route_points = route.get('routePoints', [])
+            
+            if not route_points:
+                logger.error("No route points found")
+                return None, None
+            
+            # Create static map instance
+            m = StaticMap(800, 600, padding_x=50, padding_y=50)
+            
+            # Extract coordinates
+            coordinates = [(p['longitude'], p['latitude']) for p in route_points]
+            
+            # Add route line
+            route_line = Line(coordinates, 'blue', 3)
+            m.add_line(route_line)
+            
+            # Add start marker
+            start_marker = CircleMarker(
+                (route_points[0]['longitude'], route_points[0]['latitude']), 
+                'green', 12
+            )
+            m.add_marker(start_marker)
+            
+            # Add end marker
+            end_marker = CircleMarker(
+                (route_points[-1]['longitude'], route_points[-1]['latitude']), 
+                'red', 12
+            )
+            m.add_marker(end_marker)
+            
+            # Add critical points from collections
+            collections = route_data['collections']
+            
+            # Add sharp turns
+            for turn in collections.get('sharp_turns', [])[:10]:
+                if turn.get('riskScore', 0) >= 7:
+                    marker = CircleMarker(
+                        (turn['longitude'], turn['latitude']), 
+                        'orange', 8
+                    )
+                    m.add_marker(marker)
+            
+            # Add blind spots
+            for spot in collections.get('blind_spots', [])[:10]:
+                if spot.get('riskScore', 0) >= 7:
+                    marker = CircleMarker(
+                        (spot['longitude'], spot['latitude']), 
+                        '#FF5722', 8
+                    )
+                    m.add_marker(marker)
+            
+            # Add hospitals
+            for hospital in collections.get('emergency_services', [])[:5]:
+                if hospital.get('serviceType') == 'hospital':
+                    marker = CircleMarker(
+                        (hospital['longitude'], hospital['latitude']), 
+                        'blue', 6
+                    )
+                    m.add_marker(marker)
+            
+            # Render the image
+            image = m.render()
+            
+            # Save to file
+            map_filename = f"route_map_{route['_id']}.png"
+            map_path = os.path.join(tempfile.gettempdir(), map_filename)
+            image.save(map_path)
+            
+            # Generate OSM link
+            center_lat = sum(p['latitude'] for p in route_points) / len(route_points)
+            center_lon = sum(p['longitude'] for p in route_points) / len(route_points)
+            osm_link = f"https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
+            
+            return map_path, osm_link
+            
+        except ImportError:
+            logger.error("staticmap library not installed. Install with: pip install staticmap")
+            return None, None
+        except Exception as e:
+            logger.error(f"Error generating static map: {e}")
+            return None, None
 
+    def generate_matplotlib_osm_map(self, route_data: Dict[str, Any]) -> tuple:
+        """Generate map using matplotlib with improved styling"""
+        try:
+            import matplotlib.pyplot as plt
+            import matplotlib.patches as mpatches
+            from matplotlib.patches import FancyBboxPatch
+            import numpy as np
+            
+            route = route_data['route']
+            collections = route_data['collections']
+            route_points = route.get('routePoints', [])
+            
+            if not route_points:
+                logger.error("No route points found")
+                return None, None
+            
+            # Create figure with better styling
+            fig, ax = plt.subplots(figsize=(12, 9), dpi=150)
+            
+            # Set background color
+            fig.patch.set_facecolor('white')
+            ax.set_facecolor('#f0f0f0')
+            
+            # Extract coordinates
+            lats = [p['latitude'] for p in route_points]
+            lons = [p['longitude'] for p in route_points]
+            
+            # Plot route with gradient effect
+            points = np.array([lons, lats]).T.reshape(-1, 1, 2)
+            segments = np.concatenate([points[:-1], points[1:]], axis=1)
+            
+            # Main route line
+            ax.plot(lons, lats, 'b-', linewidth=4, label='Route Path', 
+                    zorder=2, alpha=0.8, solid_capstyle='round')
+            
+            # Add shadow effect
+            ax.plot(lons, lats, 'gray', linewidth=5, alpha=0.3, 
+                    zorder=1, transform=ax.transData)
+            
+            # Start and end points with labels
+            start_lon, start_lat = lons[0], lats[0]
+            end_lon, end_lat = lons[-1], lats[-1]
+            
+            # Start point
+            ax.scatter(start_lon, start_lat, c='green', s=400, marker='o', 
+                    edgecolors='darkgreen', linewidth=3, label='Start', zorder=5)
+            ax.annotate('START', (start_lon, start_lat), 
+                    xytext=(15, 15), textcoords='offset points',
+                    fontsize=11, fontweight='bold', color='darkgreen',
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgreen", 
+                                edgecolor="darkgreen", alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.3',
+                                    color='darkgreen', lw=2))
+            
+            # End point
+            ax.scatter(end_lon, end_lat, c='red', s=400, marker='o', 
+                    edgecolors='darkred', linewidth=3, label='End', zorder=5)
+            ax.annotate('END', (end_lon, end_lat), 
+                    xytext=(15, -15), textcoords='offset points',
+                    fontsize=11, fontweight='bold', color='darkred',
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", 
+                                edgecolor="darkred", alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=-0.3',
+                                    color='darkred', lw=2))
+            
+            # Add critical points with better styling
+            self._add_styled_critical_points(ax, collections)
+            
+            # Calculate bounds with padding
+            lat_range = max(lats) - min(lats)
+            lon_range = max(lons) - min(lons)
+            padding = max(lat_range, lon_range) * 0.15
+            
+            ax.set_xlim(min(lons) - padding, max(lons) + padding)
+            ax.set_ylim(min(lats) - padding, max(lats) + padding)
+            
+            # Styling
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            ax.set_xlabel('Longitude', fontsize=12, fontweight='bold')
+            ax.set_ylabel('Latitude', fontsize=12, fontweight='bold')
+            
+            # Title with route info
+            route_name = f"{route.get('fromAddress', 'Start')} to {route.get('toAddress', 'End')}"
+            distance = route.get('totalDistance', 0)
+            title = f"Route Map: {route_name}\nTotal Distance: {distance} km"
+            ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+            
+            # Add legend with custom styling
+            legend_elements = [
+                plt.Line2D([0], [0], color='blue', lw=4, label='Route Path'),
+                plt.scatter([], [], c='green', s=200, marker='o', label='Start Point'),
+                plt.scatter([], [], c='red', s=200, marker='o', label='End Point'),
+                plt.scatter([], [], c='orange', s=100, marker='^', label='Sharp Turns'),
+                plt.scatter([], [], c='#FF5722', s=100, marker='s', label='Blind Spots'),
+                plt.scatter([], [], c='blue', s=80, marker='H', label='Hospitals'),
+                plt.scatter([], [], c='purple', s=80, marker='P', label='Police Stations')
+            ]
+            
+            legend = ax.legend(handles=legend_elements, loc='best', 
+                            fontsize=10, frameon=True, shadow=True,
+                            fancybox=True, framealpha=0.9)
+            legend.get_frame().set_facecolor('white')
+            
+            # Add scale bar
+            self._add_scale_bar(ax, lats, lons)
+            
+            # Add north arrow
+            self._add_north_arrow(ax)
+            
+            # Add info box
+            self._add_info_box(ax, route_data)
+            
+            # Save with high quality
+            plt.tight_layout()
+            
+            map_filename = f"route_map_{route['_id']}.png"
+            map_path = os.path.join(tempfile.gettempdir(), map_filename)
+            
+            plt.savefig(map_path, dpi=200, bbox_inches='tight', 
+                    facecolor='white', edgecolor='none')
+            plt.close()
+            
+            logger.info(f"Enhanced map saved successfully: {map_path}")
+            
+            # Generate OSM link
+            center_lat = (min(lats) + max(lats)) / 2
+            center_lon = (min(lons) + max(lons)) / 2
+            osm_link = f"https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
+            
+            return map_path, osm_link
+            
+        except Exception as e:
+            logger.error(f"Error generating matplotlib map: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None, None
+
+    def _add_styled_critical_points(self, ax, collections: Dict[str, List]):
+        """Add critical points to the map with improved styling"""
+        try:
+            # Sharp turns with risk-based sizing
+            sharp_turns = collections.get('sharp_turns', [])
+            for turn in sharp_turns[:15]:  # Limit to first 15
+                risk_score = self.safe_float(turn.get('riskScore', 0))
+                if risk_score >= 6:
+                    lat = self.safe_float(turn.get('latitude', 0))
+                    lon = self.safe_float(turn.get('longitude', 0))
+                    if lat and lon:
+                        # Size based on risk
+                        size = 50 + (risk_score * 10)
+                        color = 'red' if risk_score >= 8 else 'orange'
+                        ax.scatter(lon, lat, c=color, s=size, marker='^', 
+                                edgecolors='black', linewidth=1, zorder=3, alpha=0.8)
+            
+            # Blind spots
+            blind_spots = collections.get('blind_spots', [])
+            for spot in blind_spots[:15]:  # Limit to first 15
+                risk_score = self.safe_float(spot.get('riskScore', 0))
+                if risk_score >= 6:
+                    lat = self.safe_float(spot.get('latitude', 0))
+                    lon = self.safe_float(spot.get('longitude', 0))
+                    if lat and lon:
+                        size = 50 + (risk_score * 10)
+                        ax.scatter(lon, lat, c='#FF5722', s=size, marker='s', 
+                                edgecolors='darkred', linewidth=1, zorder=3, alpha=0.8)
+            
+            # Emergency services with icons
+            emergency_services = collections.get('emergency_services', [])
+            
+            # Hospitals
+            hospitals = [s for s in emergency_services if s.get('serviceType') == 'hospital']
+            for hospital in hospitals[:8]:
+                lat = self.safe_float(hospital.get('latitude', 0))
+                lon = self.safe_float(hospital.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='blue', s=60, marker='H', 
+                            edgecolors='navy', linewidth=1.5, zorder=3)
+            
+            # Police stations
+            police = [s for s in emergency_services if s.get('serviceType') == 'police']
+            for station in police[:8]:
+                lat = self.safe_float(station.get('latitude', 0))
+                lon = self.safe_float(station.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='purple', s=60, marker='P', 
+                            edgecolors='indigo', linewidth=1.5, zorder=3)
+            
+            # Network dead zones
+            dead_zones = [n for n in collections.get('network_coverage', []) if n.get('isDeadZone', False)]
+            for zone in dead_zones[:8]:
+                lat = self.safe_float(zone.get('latitude', 0))
+                lon = self.safe_float(zone.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='black', s=40, marker='x', 
+                            linewidth=2.5, zorder=3)
+                    
+        except Exception as e:
+            logger.warning(f"Error adding critical points to map: {e}")
+
+    def _add_north_arrow(self, ax):
+        """Add a north arrow to the map"""
+        try:
+            # Get current axes limits
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            
+            # Position in top-right corner
+            arrow_x = xlim[1] - (xlim[1] - xlim[0]) * 0.05
+            arrow_y = ylim[1] - (ylim[1] - ylim[0]) * 0.05
+            arrow_length = (ylim[1] - ylim[0]) * 0.05
+            
+            # Draw arrow
+            ax.annotate('N', xy=(arrow_x, arrow_y), xytext=(arrow_x, arrow_y - arrow_length),
+                    ha='center', va='bottom', fontsize=14, fontweight='bold',
+                    arrowprops=dict(arrowstyle='->', lw=2, color='black'))
+            
+        except Exception as e:
+            logger.warning(f"Could not add north arrow: {e}")
+
+    def _add_info_box(self, ax, route_data: Dict[str, Any]):
+        """Add information box to the map"""
+        try:
+            stats = route_data['statistics']
+            risk_level = self.calculate_risk_level(stats['risk_analysis']['avg_risk_score'])
+            
+            info_text = (
+                f"Route Risk Level: {risk_level}\n"
+                f"Critical Points: {stats['risk_analysis']['critical_points']}\n"
+                f"Emergency Services: {stats['safety_metrics']['hospitals']} Hospitals, "
+                f"{stats['safety_metrics']['police_stations']} Police Stations"
+            )
+            
+            # Position in bottom-left
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            
+            box_x = xlim[0] + (xlim[1] - xlim[0]) * 0.02
+            box_y = ylim[0] + (ylim[1] - ylim[0]) * 0.02
+            
+            # Create fancy box
+            props = dict(boxstyle='round,pad=0.5', facecolor='white', 
+                        edgecolor='gray', alpha=0.9)
+            ax.text(box_x, box_y, info_text, fontsize=9, 
+                bbox=props, verticalalignment='bottom')
+            
+        except Exception as e:
+            logger.warning(f"Could not add info box: {e}")
     def add_osm_link_box(self, canvas_obj, interactive_link: str, y_pos: int):
         """Add clickable link box for OpenStreetMap"""
         if not interactive_link:
