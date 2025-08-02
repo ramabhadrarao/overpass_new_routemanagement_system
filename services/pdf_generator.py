@@ -1,11 +1,21 @@
+# services/pdf_generator.py
+# PDF Generator Service - Wrapper for the actual PDF generator
+# Path: /services/pdf_generator.py
+
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
+import logging
 
-# Import the existing PDF generator
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add the project root to Python path so we can import from root
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+# Import the main PDF generator
 from hpcl_pdf_generator_final import HPCLDynamicPDFGenerator
+
+logger = logging.getLogger(__name__)
 
 class PDFGeneratorService:
     def __init__(self, mongodb_uri, output_folder):
@@ -27,7 +37,9 @@ class PDFGeneratorService:
             # Generate the PDF
             result_path = generator.generate_pdf_report(route_id, output_path)
             
+            logger.info(f"PDF generated successfully: {result_path}")
             return result_path
             
         except Exception as e:
+            logger.error(f"PDF generation failed: {str(e)}")
             raise Exception(f"PDF generation failed: {str(e)}")
