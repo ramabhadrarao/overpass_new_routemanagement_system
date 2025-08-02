@@ -12,17 +12,18 @@ import io
 from PIL import Image
 import sys
 import tempfile
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, Rectangle
+import numpy as np
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from google_maps_image_downloader import GoogleMapsImageDownloader
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-import matplotlib.pyplot as plt
-from matplotlib.patches import Circle, Rectangle
-import numpy as np
+
 # Third-party imports
 try:
     from pymongo import MongoClient
@@ -573,7 +574,7 @@ class HPCLDynamicPDFGenerator:
     
 
     def generate_overpass_route_map(self, route_data: Dict[str, Any]) -> tuple:
-        """Generate route map using Overpass API and matplotlib instead of Google Maps"""
+        """Generate route map using matplotlib visualization"""
         try:
             route = route_data['route']
             collections = route_data['collections']
@@ -584,26 +585,29 @@ class HPCLDynamicPDFGenerator:
             # Get route points
             route_points = route.get('routePoints', [])
             if not route_points:
+                logger.error("No route points found")
                 return None, None
                 
             # Extract coordinates
             lats = [p['latitude'] for p in route_points]
             lons = [p['longitude'] for p in route_points]
             
-            # Plot the route line
-            ax.plot(lons, lats, 'b-', linewidth=3, label='Route', zorder=1)
+            # Plot the route line with better styling
+            ax.plot(lons, lats, 'b-', linewidth=3, label='Route', zorder=1, alpha=0.8)
             
-            # Plot start and end points
-            ax.scatter(lons[0], lats[0], c='green', s=200, marker='o', 
-                    edgecolors='darkgreen', linewidth=2, label='Start', zorder=3)
-            ax.scatter(lons[-1], lats[-1], c='red', s=200, marker='o', 
-                    edgecolors='darkred', linewidth=2, label='End', zorder=3)
+            # Plot start and end points with larger markers
+            ax.scatter(lons[0], lats[0], c='green', s=300, marker='o', 
+                    edgecolors='darkgreen', linewidth=3, label='Start', zorder=3)
+            ax.scatter(lons[-1], lats[-1], c='red', s=300, marker='o', 
+                    edgecolors='darkred', linewidth=3, label='End', zorder=3)
             
             # Add text labels for start and end
-            ax.annotate('START', (lons[0], lats[0]), xytext=(5, 5), 
-                    textcoords='offset points', fontsize=8, fontweight='bold')
-            ax.annotate('END', (lons[-1], lats[-1]), xytext=(5, 5), 
-                    textcoords='offset points', fontsize=8, fontweight='bold')
+            ax.annotate('START', (lons[0], lats[0]), xytext=(10, 10), 
+                    textcoords='offset points', fontsize=10, fontweight='bold',
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="green", alpha=0.5))
+            ax.annotate('END', (lons[-1], lats[-1]), xytext=(10, 10), 
+                    textcoords='offset points', fontsize=10, fontweight='bold',
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="red", alpha=0.5))
             
             # Plot critical points
             self._add_critical_points_to_map(ax, collections)
@@ -611,26 +615,38 @@ class HPCLDynamicPDFGenerator:
             # Set map bounds with padding
             lat_range = max(lats) - min(lats)
             lon_range = max(lons) - min(lons)
-            padding = max(lat_range, lon_range) * 0.1
+            padding = max(lat_range, lon_range) * 0.15
             
             ax.set_xlim(min(lons) - padding, max(lons) + padding)
             ax.set_ylim(min(lats) - padding, max(lats) + padding)
             
             # Add grid and labels
-            ax.grid(True, alpha=0.3)
-            ax.set_xlabel('Longitude', fontsize=10)
-            ax.set_ylabel('Latitude', fontsize=10)
-            ax.set_title(f"Route: {route.get('fromAddress', 'Start')} to {route.get('toAddress', 'End')}", 
-                        fontsize=12, fontweight='bold')
+            ax.grid(True, alpha=0.3, linestyle='--')
+            ax.set_xlabel('Longitude', fontsize=11)
+            ax.set_ylabel('Latitude', fontsize=11)
             
-            # Add legend
-            ax.legend(loc='best', fontsize=8)
+            # Add title with route information
+            route_name = f"{route.get('fromAddress', 'Start')} to {route.get('toAddress', 'End')}"
+            distance = route.get('totalDistance', 0)
+            ax.set_title(f"Route Map: {route_name}\nTotal Distance: {distance} km", 
+                        fontsize=14, fontweight='bold', pad=20)
+            
+            # Add legend with better positioning
+            ax.legend(loc='best', fontsize=9, frameon=True, shadow=True)
+            
+            # Add scale bar
+            self._add_scale_bar(ax, lats, lons)
             
             # Save the map
             map_filename = f"route_map_{route['_id']}.png"
             map_path = os.path.join(tempfile.gettempdir(), map_filename)
-            plt.savefig(map_path, dpi=150, bbox_inches='tight')
+            
+            # Save with higher DPI for better quality
+            plt.tight_layout()
+            plt.savefig(map_path, dpi=200, bbox_inches='tight', facecolor='white', edgecolor='none')
             plt.close()
+            
+            logger.info(f"Map saved successfully: {map_path}")
             
             # Generate OpenStreetMap link
             center_lat = (min(lats) + max(lats)) / 2
@@ -641,55 +657,104 @@ class HPCLDynamicPDFGenerator:
             
         except Exception as e:
             logger.error(f"Error generating Overpass map: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None, None
-
+    def _add_scale_bar(self, ax, lats, lons):
+        """Add a scale bar to the map"""
+        try:
+            # Calculate scale
+            lat_center = (max(lats) + min(lats)) / 2
+            lon_range = max(lons) - min(lons)
+            
+            # Approximate km per degree longitude at this latitude
+            km_per_deg = 111.32 * math.cos(math.radians(lat_center))
+            
+            # Calculate scale bar length (aim for nice round numbers)
+            map_width_km = lon_range * km_per_deg
+            if map_width_km > 100:
+                scale_km = 50
+            elif map_width_km > 50:
+                scale_km = 20
+            elif map_width_km > 20:
+                scale_km = 10
+            elif map_width_km > 10:
+                scale_km = 5
+            else:
+                scale_km = 2
+            
+            scale_deg = scale_km / km_per_deg
+            
+            # Position scale bar in bottom right
+            x_pos = max(lons) - lon_range * 0.15 - scale_deg
+            y_pos = min(lats) + (max(lats) - min(lats)) * 0.05
+            
+            # Draw scale bar
+            ax.plot([x_pos, x_pos + scale_deg], [y_pos, y_pos], 'k-', linewidth=3)
+            ax.plot([x_pos, x_pos], [y_pos - 0.001, y_pos + 0.001], 'k-', linewidth=3)
+            ax.plot([x_pos + scale_deg, x_pos + scale_deg], [y_pos - 0.001, y_pos + 0.001], 'k-', linewidth=3)
+            
+            # Add text
+            ax.text(x_pos + scale_deg/2, y_pos + 0.002, f'{scale_km} km', 
+                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+                    
+        except Exception as e:
+            logger.warning(f"Could not add scale bar: {e}")
     def _add_critical_points_to_map(self, ax, collections: Dict[str, List]):
         """Add critical points to the matplotlib map"""
-        
-        # Sharp turns
-        sharp_turns = collections.get('sharp_turns', [])
-        for turn in sharp_turns:
-            if self.safe_float(turn.get('riskScore', 0)) >= 7:
-                lat = self.safe_float(turn.get('latitude', 0))
-                lon = self.safe_float(turn.get('longitude', 0))
-                ax.scatter(lon, lat, c='orange', s=50, marker='^', 
-                        edgecolors='darkorange', linewidth=1, zorder=2)
-        
-        # Blind spots
-        blind_spots = collections.get('blind_spots', [])
-        for spot in blind_spots:
-            if self.safe_float(spot.get('riskScore', 0)) >= 7:
-                lat = self.safe_float(spot.get('latitude', 0))
-                lon = self.safe_float(spot.get('longitude', 0))
-                ax.scatter(lon, lat, c='red', s=50, marker='s', 
-                        edgecolors='darkred', linewidth=1, zorder=2)
-        
-        # Emergency services
-        emergency_services = collections.get('emergency_services', [])
-        
-        # Hospitals
-        hospitals = [s for s in emergency_services if s.get('serviceType') == 'hospital']
-        for hospital in hospitals[:5]:  # Limit to 5
-            lat = self.safe_float(hospital.get('latitude', 0))
-            lon = self.safe_float(hospital.get('longitude', 0))
-            ax.scatter(lon, lat, c='blue', s=40, marker='H', 
-                    edgecolors='darkblue', linewidth=1, zorder=2)
-        
-        # Police stations
-        police = [s for s in emergency_services if s.get('serviceType') == 'police']
-        for station in police[:5]:  # Limit to 5
-            lat = self.safe_float(station.get('latitude', 0))
-            lon = self.safe_float(station.get('longitude', 0))
-            ax.scatter(lon, lat, c='purple', s=40, marker='P', 
-                    edgecolors='darkpurple', linewidth=1, zorder=2)
-        
-        # Network dead zones
-        dead_zones = [n for n in collections.get('network_coverage', []) if n.get('isDeadZone', False)]
-        for zone in dead_zones[:5]:  # Limit to 5
-            lat = self.safe_float(zone.get('latitude', 0))
-            lon = self.safe_float(zone.get('longitude', 0))
-            ax.scatter(lon, lat, c='black', s=30, marker='x', 
-                    linewidth=2, zorder=2)
+        try:
+            # Sharp turns
+            sharp_turns = collections.get('sharp_turns', [])
+            for turn in sharp_turns[:10]:  # Limit to first 10
+                if self.safe_float(turn.get('riskScore', 0)) >= 7:
+                    lat = self.safe_float(turn.get('latitude', 0))
+                    lon = self.safe_float(turn.get('longitude', 0))
+                    if lat and lon:
+                        ax.scatter(lon, lat, c='orange', s=50, marker='^', 
+                                edgecolors='darkorange', linewidth=1, zorder=2)
+            
+            # Blind spots
+            blind_spots = collections.get('blind_spots', [])
+            for spot in blind_spots[:10]:  # Limit to first 10
+                if self.safe_float(spot.get('riskScore', 0)) >= 7:
+                    lat = self.safe_float(spot.get('latitude', 0))
+                    lon = self.safe_float(spot.get('longitude', 0))
+                    if lat and lon:
+                        ax.scatter(lon, lat, c='red', s=50, marker='s', 
+                                edgecolors='darkred', linewidth=1, zorder=2)
+            
+            # Emergency services
+            emergency_services = collections.get('emergency_services', [])
+            
+            # Hospitals
+            hospitals = [s for s in emergency_services if s.get('serviceType') == 'hospital']
+            for hospital in hospitals[:5]:  # Limit to 5
+                lat = self.safe_float(hospital.get('latitude', 0))
+                lon = self.safe_float(hospital.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='blue', s=40, marker='H', 
+                            edgecolors='navy', linewidth=1, zorder=2)
+            
+            # Police stations (fixed color issue here)
+            police = [s for s in emergency_services if s.get('serviceType') == 'police']
+            for station in police[:5]:  # Limit to 5
+                lat = self.safe_float(station.get('latitude', 0))
+                lon = self.safe_float(station.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='purple', s=40, marker='P', 
+                            edgecolors='indigo', linewidth=1, zorder=2)  # Changed from 'darkpurple' to 'indigo'
+            
+            # Network dead zones
+            dead_zones = [n for n in collections.get('network_coverage', []) if n.get('isDeadZone', False)]
+            for zone in dead_zones[:5]:  # Limit to 5
+                lat = self.safe_float(zone.get('latitude', 0))
+                lon = self.safe_float(zone.get('longitude', 0))
+                if lat and lon:
+                    ax.scatter(lon, lat, c='black', s=30, marker='x', 
+                            linewidth=2, zorder=2)
+                            
+        except Exception as e:
+            logger.warning(f"Error adding critical points to map: {e}")
 
     def generate_osm_tile_map(self, route_data: Dict[str, Any]) -> tuple:
         """Alternative: Generate map using OpenStreetMap tiles"""
@@ -843,7 +908,7 @@ class HPCLDynamicPDFGenerator:
         return color_map.get(color_name, self.colors.SECONDARY)
     
     def draw_map_placeholder(self, canvas_obj, route_data: Dict[str, Any], y_pos: int):
-        """Draw a placeholder map when Google Maps API is not available"""
+        """Draw a placeholder map when map generation fails"""
         route = route_data['route']
         
         # Map placeholder background
@@ -851,15 +916,9 @@ class HPCLDynamicPDFGenerator:
         canvas_obj.rect(40, y_pos - 280, 520, 280, fill=1, stroke=1)
         canvas_obj.setStrokeColor(self.colors.SECONDARY)
         
-        # Title
-        # canvas_obj.setFillColor(self.colors.PRIMARY)
-        # canvas_obj.setFont("Helvetica-Bold", 16)
-        # map_text = "ROUTE MAP VISUALIZATION"
-        # text_width = canvas_obj.stringWidth(map_text, "Helvetica-Bold", 16)
-        # canvas_obj.drawString((self.page_width - text_width) / 2, y_pos - 120, map_text)
-        
         # Route info
         canvas_obj.setFont("Helvetica", 12)
+        canvas_obj.setFillColor(self.colors.PRIMARY)
         detail_text = f"Route: {route.get('fromAddress', 'Start')} → {route.get('toAddress', 'End')}"
         detail_width = canvas_obj.stringWidth(detail_text, "Helvetica", 12)
         canvas_obj.drawString((self.page_width - detail_width) / 2, y_pos - 140, detail_text)
@@ -879,17 +938,19 @@ class HPCLDynamicPDFGenerator:
         canvas_obj.drawString((self.page_width - start_width) / 2, y_pos - 180, start_coords)
         canvas_obj.drawString((self.page_width - end_width) / 2, y_pos - 200, end_coords)
         
-        # API note
+        # Note about map generation
         canvas_obj.setFont("Helvetica-Oblique", 10)
         canvas_obj.setFillColor(self.colors.DANGER)
-        note_text = "Set GOOGLE_MAPS_API_KEY in .env file for real route visualization"
+        note_text = "Map visualization temporarily unavailable"
         note_width = canvas_obj.stringWidth(note_text, "Helvetica-Oblique", 10)
         canvas_obj.drawString((self.page_width - note_width) / 2, y_pos - 230, note_text)
         
-        # Interactive link placeholder
+        # OpenStreetMap link
         canvas_obj.setFont("Helvetica", 9)
         canvas_obj.setFillColor(self.colors.INFO)
-        link_text = f"Google Maps: https://www.google.com/maps/dir/{route.get('fromCoordinates', {}).get('latitude', 0)},{route.get('fromCoordinates', {}).get('longitude', 0)}/{route.get('toCoordinates', {}).get('latitude', 0)},{route.get('toCoordinates', {}).get('longitude', 0)}"
+        center_lat = (route.get('fromCoordinates', {}).get('latitude', 0) + route.get('toCoordinates', {}).get('latitude', 0)) / 2
+        center_lon = (route.get('fromCoordinates', {}).get('longitude', 0) + route.get('toCoordinates', {}).get('longitude', 0)) / 2
+        link_text = f"OpenStreetMap: https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
         if len(link_text) > 80:
             link_text = link_text[:80] + "..."
         link_width = canvas_obj.stringWidth(link_text, "Helvetica", 9)
