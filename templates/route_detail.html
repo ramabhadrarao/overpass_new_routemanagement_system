@@ -398,8 +398,8 @@
                     <div class="stat-value">{{ analysis_data.eco_zones|length }}</div>
                     <div class="stat-label">Eco-Sensitive Zones</div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-value">{{ analysis_data.network_coverage|filter(lambda x: x.isDeadZone)|length }}</div>
+              <div class="stat-card">
+                    <div class="stat-value">{{ stats.dead_zones|default(0) }}</div>
                     <div class="stat-label">Network Dead Zones</div>
                 </div>
             </div>

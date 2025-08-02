@@ -186,6 +186,24 @@ def route_detail(route_id):
         flash('Route not found', 'danger')
         return redirect(url_for('dashboard'))
         
+    # Convert ObjectId to string for JSON serialization
+    route['_id'] = str(route['_id'])
+    
+    # Convert any ObjectIds in nested route fields
+    if route.get('fromCoordinates'):
+        if isinstance(route['fromCoordinates'], dict) and route['fromCoordinates'].get('_id'):
+            route['fromCoordinates']['_id'] = str(route['fromCoordinates']['_id'])
+    
+    if route.get('toCoordinates'):
+        if isinstance(route['toCoordinates'], dict) and route['toCoordinates'].get('_id'):
+            route['toCoordinates']['_id'] = str(route['toCoordinates']['_id'])
+    
+    # Convert routePoints if they contain any ObjectIds
+    if route.get('routePoints'):
+        for point in route['routePoints']:
+            if isinstance(point, dict) and point.get('_id'):
+                point['_id'] = str(point['_id'])
+    
     # Get analysis data
     route_obj_id = ObjectId(route_id)
     
@@ -200,15 +218,37 @@ def route_detail(route_id):
     weather_conditions = list(db.weatherconditions.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
     traffic_data = list(db.trafficdata.find({'routeId': route_obj_id}).sort('distanceFromStartKm', 1))
     
-    # Convert ObjectIds to strings for JSON serialization
+    # Convert ObjectIds to strings for JSON serialization in all collections
     for doc_list in [sharp_turns, blind_spots, emergency_services, road_conditions, 
                      network_coverage, eco_zones, accident_areas, weather_conditions, traffic_data]:
         for doc in doc_list:
-            doc['_id'] = str(doc['_id'])
-            doc['routeId'] = str(doc['routeId'])
+            # Convert document _id
+            if doc.get('_id'):
+                doc['_id'] = str(doc['_id'])
+            
+            # Convert routeId
+            if doc.get('routeId'):
+                doc['routeId'] = str(doc['routeId'])
+            
+            # Convert any other ObjectId fields that might exist
+            for key, value in doc.items():
+                if hasattr(value, '__class__') and value.__class__.__name__ == 'ObjectId':
+                    doc[key] = str(value)
     
     # Get API logs
     api_logs = api_log_model.get_route_api_logs(route_id)
+    
+    # Convert ObjectIds in API logs
+    for log in api_logs:
+        if log.get('_id'):
+            log['_id'] = str(log['_id'])
+        if log.get('route_id'):
+            log['route_id'] = str(log['route_id'])
+        
+        # Handle any ObjectIds in nested fields
+        for key, value in log.items():
+            if hasattr(value, '__class__') and value.__class__.__name__ == 'ObjectId':
+                log[key] = str(value)
     
     # Prepare analysis data
     analysis_data = {

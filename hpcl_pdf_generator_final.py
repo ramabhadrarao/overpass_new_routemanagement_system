@@ -2450,7 +2450,7 @@ class HPCLDynamicPDFGenerator:
 
             medical_data = sorted(
                 [n for n in unique_medical_facilities if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: x.get("distanceFromStartKm", 0))
+                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             
             headers = ["id", "Facility Name", "Address", "From Supply (km)","From Customer (km)","Coordinates", "Link", "Phone"]
             col_widths = [20, 110, 140, 50, 58, 58, 30, 80]
@@ -2509,7 +2509,7 @@ class HPCLDynamicPDFGenerator:
         if police_stations:
             police_sort_data = sorted(
                 [n for n in police_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: x.get("distanceFromStartKm", 0))
+                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             
             police_data = []
             for i, station in enumerate(police_sort_data):
@@ -2556,7 +2556,7 @@ class HPCLDynamicPDFGenerator:
         if fire_stations:
             fire_sort_data = sorted(
                 [n for n in fire_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: x.get("distanceFromStartKm", 0))
+                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             fire_data = []
             for i, station in enumerate(fire_sort_data):
                 latitude = station.get('latitude',0)
@@ -2602,7 +2602,7 @@ class HPCLDynamicPDFGenerator:
         if fuel_stations:
             fuel_sort_data = sorted(
                 [n for n in fuel_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: x.get("distanceFromStartKm", 0))
+                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             fuel_data = []
             for i, station in enumerate(fuel_sort_data):
                 latitude = station.get('latitude',0)
@@ -2647,7 +2647,7 @@ class HPCLDynamicPDFGenerator:
         if education_stations:
             education_sort_data = sorted(
                 [n for n in education_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: x.get("distanceFromStartKm", 0))
+                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             education_data = []
             for i, station in enumerate(education_sort_data):
                 latitude = station.get('latitude',0)
@@ -2692,7 +2692,7 @@ class HPCLDynamicPDFGenerator:
         if food_stations:
             food_sort_data = sorted(
                 [n for n in food_stations if n.get("distanceFromStartKm", 0) >= 1.0],
-                key=lambda x: x.get("distanceFromStartKm", 0))
+                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
             food_data = []
             for i, station in enumerate(food_sort_data):
                 latitude = station.get('latitude',0)
@@ -5610,7 +5610,14 @@ class HPCLDynamicPDFGenerator:
             canvas_obj.drawString(70, y_pos, "• " + recommendation)
             
         return y_pos
-
+    def safe_float(self, value, default=0.0):
+        """Safely convert value to float, returning default if conversion fails"""
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
     def generate_pdf_report(self, route_id: str, output_path: str = None) -> str:
         """Main method to generate complete PDF report with comprehensive risk zones"""
         try:
