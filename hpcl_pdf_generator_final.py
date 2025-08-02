@@ -4895,7 +4895,77 @@ class HPCLDynamicPDFGenerator:
                 hyper_link_col_index=1
                 
             )
-
+    def generate_route_pdf(self, route_id: str) -> str:
+        """Generate PDF for a route"""
+        try:
+            # Import the main PDF generator
+            from hpcl_pdf_generator_final import HPCLDynamicPDFGenerator
+            
+            # Initialize PDF generator
+            pdf_generator = HPCLDynamicPDFGenerator(self.mongodb_uri)
+            
+            # Generate PDF
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_filename = f"route_analysis_{route_id}_{timestamp}.pdf"
+            output_path = os.path.join(self.output_folder, output_filename)
+            
+            # Generate the PDF
+            result_path = pdf_generator.generate_pdf_report(route_id, output_path)
+            
+            return result_path
+            
+        except Exception as e:
+            logger.error(f"PDF generation failed: {str(e)}")
+            raise Exception(f"PDF generation failed: {str(e)}")
+    
+    def safe_float_conversion(self, value: Any, default: float = 0.0) -> float:
+        """Safely convert value to float"""
+        if value is None:
+            return default
+        
+        try:
+            # If it's already a number, return it
+            if isinstance(value, (int, float)):
+                return float(value)
+            
+            # If it's a string, try to convert
+            if isinstance(value, str):
+                # Remove any non-numeric characters except . and -
+                cleaned = ''.join(c for c in value if c.isdigit() or c in '.-')
+                if cleaned:
+                    return float(cleaned)
+            
+            return default
+        except (TypeError, ValueError):
+            return default
+    
+    def safe_int_conversion(self, value: Any, default: int = 0) -> int:
+        """Safely convert value to int"""
+        if value is None:
+            return default
+        
+        try:
+            # If it's already a number, return it
+            if isinstance(value, (int, float)):
+                return int(value)
+            
+            # If it's a string, try to convert
+            if isinstance(value, str):
+                # Remove any non-numeric characters except -
+                cleaned = ''.join(c for c in value if c.isdigit() or c == '-')
+                if cleaned:
+                    return int(cleaned)
+            
+            return default
+        except (TypeError, ValueError):
+            return default
+    
+    def ensure_numeric_comparison(self, value1: Any, value2: Any) -> tuple:
+        """Ensure both values are numeric for comparison"""
+        # Convert both to float for comparison
+        num1 = self.safe_float_conversion(value1, 0.0)
+        num2 = self.safe_float_conversion(value2, 0.0)
+        return num1, num2
     def create_blind_spots_analysis_page(self, canvas_obj, route_data):   
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
         y_pos = self.page_height - 120

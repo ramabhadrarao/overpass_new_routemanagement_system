@@ -1,5 +1,5 @@
 # app.py
-# Main Flask application file - Updated with delete functionality and fixes
+# Main Flask application file - Updated with delete functionality, fixes, and multi-processing support
 # Path: /app.py
 
 import os
@@ -17,8 +17,10 @@ from services.pdf_generator import PDFGeneratorService
 from utils.file_parser import FileParser
 import uuid
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
+import math
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -525,11 +527,13 @@ def start_upload_api():
         'current_route': None,
         'last_completed': None,
         'start_time': datetime.utcnow().isoformat(),
-        'routes': []
+        'routes': [],
+        'concurrent_workers': app.config.get('CONCURRENT_WORKERS', 5)
     }
     
     # Start processing in background thread
-    thread = Thread(target=process_routes_async, args=(filepath, upload_id, current_user.id))
+    thread = Thread(target=process_routes_async_multiprocessing, 
+                   args=(filepath, upload_id, current_user.id))
     thread.daemon = True
     thread.start()
     
@@ -565,7 +569,7 @@ def cancel_upload(upload_id):
     return jsonify({'error': 'Invalid upload ID'}), 404
 
 def process_routes_async(filepath, upload_id, user_id):
-    """Process routes asynchronously with progress updates - OPTIMIZED VERSION"""
+    """Process routes asynchronously with progress updates - ORIGINAL VERSION"""
     try:
         # Parse CSV
         routes = file_parser.parse_route_csv(filepath)
@@ -700,6 +704,174 @@ def process_routes_async(filepath, upload_id, user_id):
         upload_progress[upload_id]['error'] = str(e)
         upload_progress[upload_id]['current_route'] = None
         logger.error(f"Error in async processing: {str(e)}")
+
+def process_routes_async_multiprocessing(filepath, upload_id, user_id):
+    """Process routes asynchronously with multi-threading/processing support"""
+    try:
+        # Parse CSV
+        routes = file_parser.parse_route_csv(filepath)
+        
+        # Log start
+        logger.info(f"Starting multi-threaded processing of {len(routes)} routes from {filepath}")
+        
+        # Get number of workers from config
+        max_workers = app.config.get('CONCURRENT_WORKERS', 5)
+        
+        # Create a thread pool executor
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit routes to executor
+            future_to_route = {}
+            
+            for index, route_info in enumerate(routes):
+                # Check if cancelled
+                if upload_progress[upload_id]['status'] == 'cancelled':
+                    logger.info(f"Processing cancelled before submitting route {index + 1}/{len(routes)}")
+                    break
+                
+                # Submit route for processing
+                future = executor.submit(process_single_route_worker, 
+                                       route_info, upload_id, index, len(routes))
+                future_to_route[future] = route_info
+            
+            # Process completed futures
+            for future in as_completed(future_to_route):
+                if upload_progress[upload_id]['status'] == 'cancelled':
+                    logger.info("Processing cancelled, stopping future processing")
+                    executor.shutdown(wait=False)
+                    break
+                
+                route_info = future_to_route[future]
+                try:
+                    result = future.result()
+                    # Result is already handled in the worker function
+                except Exception as e:
+                    route_name = f"{route_info['BU Code']}_to_{route_info['Row Labels']}"
+                    upload_progress[upload_id]['failed'] += 1
+                    upload_progress[upload_id]['last_completed'] = {
+                        'name': route_name,
+                        'status': 'failed',
+                        'message': str(e)
+                    }
+                    logger.error(f"Error in future for route {route_name}: {str(e)}")
+        
+        # Mark as completed
+        upload_progress[upload_id]['status'] = 'completed'
+        upload_progress[upload_id]['current_route'] = None
+        upload_progress[upload_id]['end_time'] = datetime.utcnow().isoformat()
+        
+        # Calculate final statistics
+        total_processed = upload_progress[upload_id]['processed'] + upload_progress[upload_id]['skipped'] + upload_progress[upload_id]['failed']
+        logger.info(f"Completed multi-threaded processing: {total_processed}/{len(routes)} routes")
+        
+    except Exception as e:
+        upload_progress[upload_id]['status'] = 'failed'
+        upload_progress[upload_id]['error'] = str(e)
+        upload_progress[upload_id]['current_route'] = None
+        logger.error(f"Error in multi-threaded processing: {str(e)}")
+
+def process_single_route_worker(route_info, upload_id, index, total_routes):
+    """Worker function to process a single route"""
+    route_name = f"{route_info['BU Code']}_to_{route_info['Row Labels']}"
+    
+    try:
+        # Update current route
+        upload_progress[upload_id]['current_route'] = {
+            'name': route_name,
+            'stage': 'processing',
+            'stage_text': f'Processing route {index + 1}/{total_routes}...'
+        }
+        
+        # Check if route already exists
+        existing_route = route_model.find_by_codes(
+            route_info['BU Code'],
+            route_info['Row Labels']
+        )
+        
+        if existing_route and existing_route.get('processing_status') == 'completed':
+            upload_progress[upload_id]['skipped'] += 1
+            upload_progress[upload_id]['last_completed'] = {
+                'name': route_name,
+                'status': 'skipped',
+                'message': 'Route already processed'
+            }
+            logger.info(f"Skipped existing route: {route_name}")
+            return {'status': 'skipped', 'route': route_name}
+        
+        # Find coordinate file
+        coord_file = file_parser.find_coordinate_file(
+            route_info['BU Code'],
+            route_info['Row Labels'],
+            'route_data'
+        )
+        
+        if not coord_file:
+            raise ValueError(f"Coordinate file not found for {route_name}")
+        
+        # Parse coordinates
+        coordinates = file_parser.parse_coordinate_file(coord_file)
+        
+        if not coordinates:
+            raise ValueError(f"No valid coordinates found in {coord_file}")
+        
+        logger.info(f"Found {len(coordinates)} coordinates for route {route_name}")
+        
+        # Create or update route
+        route_data = prepare_route_data(route_info, coordinates)
+        
+        if existing_route:
+            # Update existing route
+            route_id = str(existing_route['_id'])
+            db.routes.update_one(
+                {'_id': existing_route['_id']},
+                {'$set': route_data}
+            )
+            logger.info(f"Updated existing route {route_id}")
+        else:
+            # Create new route
+            route_result = route_model.create_route(route_data)
+            route_id = str(route_result.inserted_id)
+            logger.info(f"Created new route {route_id}")
+        
+        # Process route with fast mode
+        try:
+            route_processor.process_single_route_fast(route_id, route_info, coordinates)
+            
+            upload_progress[upload_id]['processed'] += 1
+            upload_progress[upload_id]['last_completed'] = {
+                'name': route_name,
+                'status': 'completed',
+                'message': 'Successfully processed'
+            }
+            logger.info(f"Successfully processed route {route_name}")
+            return {'status': 'completed', 'route': route_name}
+            
+        except Exception as process_error:
+            # Try fallback processing
+            logger.warning(f"Fast processing failed for {route_name}, trying regular mode: {process_error}")
+            route_processor.process_single_route_with_id(route_id, route_info, coordinates)
+            
+            upload_progress[upload_id]['processed'] += 1
+            upload_progress[upload_id]['last_completed'] = {
+                'name': route_name,
+                'status': 'completed',
+                'message': 'Successfully processed (fallback mode)'
+            }
+            return {'status': 'completed', 'route': route_name}
+        
+    except Exception as e:
+        upload_progress[upload_id]['failed'] += 1
+        upload_progress[upload_id]['last_completed'] = {
+            'name': route_name,
+            'status': 'failed',
+            'message': str(e)
+        }
+        logger.error(f"Error processing route {route_name}: {str(e)}")
+        
+        # Update route status if it was created
+        if 'route_id' in locals():
+            route_model.update_processing_status(route_id, 'failed', str(e))
+        
+        raise e
 
 def prepare_route_data(route_info, coordinates):
     """Prepare route data for database insertion"""
