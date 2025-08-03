@@ -2,43 +2,53 @@
 """
 Google Maps Image Downloader for HPCL Sharp Turns and Blind Spots
 Downloads Street View and Satellite images for each critical point
-Enhanced with TileServer GL support for satellite and roadmap images
+Enhanced with multiple API key management and quota tracking
 """
 
 import os
 import requests
 import time
-import math
+import random
+import sqlite3
+import json
 from pathlib import Path
+from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any 
 import logging
 from PIL import Image
 import io
+import threading
 
 logger = logging.getLogger(__name__)
 
 class GoogleMapsImageDownloader:
     """Downloads and manages Google Maps images for sharp turns and blind spots"""
     
-    def __init__(self, api_key: str, base_path: str = "./route_images", 
-                 tileserver_url: str = "http://69.62.73.201:8080", 
-                 use_tileserver: bool = True):
+    def __init__(self, api_key: str = None, base_path: str = "./route_images"):
         """
-        Initialize the image downloader
+        Initialize the image downloader with multiple API key support
         
         Args:
-            api_key: Google Maps API key
+            api_key: Google Maps API key (string or list of strings)
             base_path: Base directory for storing images
-            tileserver_url: TileServer GL URL (default: "http://69.62.73.201:8080")
-            use_tileserver: Whether to use TileServer for satellite/roadmap images (default: True)
         """
-        self.api_key = api_key
+        # Maintain backward compatibility - accept single key
+        if api_key:
+            if isinstance(api_key, str):
+                self.api_keys = [api_key]
+            elif isinstance(api_key, list):
+                self.api_keys = [k for k in api_key if k]
+            else:
+                self.api_keys = []
+        else:
+            # Try to load from environment
+            self.api_keys = self._load_keys_from_env()
+        
+        if not self.api_keys:
+            logger.warning("No API keys provided!")
+        
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
-        
-        # TileServer configuration
-        self.tileserver_url = tileserver_url.rstrip('/') if tileserver_url else None
-        self.use_tileserver = use_tileserver and tileserver_url is not None
         
         # API endpoints
         self.street_view_url = "https://maps.googleapis.com/maps/api/streetview"
@@ -48,6 +58,272 @@ class GoogleMapsImageDownloader:
         self.request_delay = 0.1  # 100ms between requests
         self.last_request_time = 0
         
+        # Database for tracking API usage
+        self.db_path = self.base_path / "api_usage.db"
+        self.db_lock = threading.Lock()
+        self._init_database()
+        
+        # For backward compatibility - use first key as default
+        if self.api_keys:
+            self.api_key = self.api_keys[0]
+        else:
+            self.api_key = None
+        
+        logger.info(f"✅ Image Downloader initialized with {len(self.api_keys)} API keys")
+    
+    def _load_keys_from_env(self) -> List[str]:
+        """Load API keys from environment variables"""
+        keys = []
+        
+        # First check the original environment variable for backward compatibility
+        original_key = os.getenv('GOOGLE_MAPS_API_KEY')
+        if original_key:
+            keys.append(original_key)
+        
+        # Try multiple environment variable patterns
+        patterns = [
+            "GOOGLE_MAPS_API_KEY_1",
+            "GOOGLE_MAPS_API_KEY_2",
+            "GOOGLE_MAPS_API_KEY_3",
+            "GOOGLE_API_KEY_1",
+            "GOOGLE_API_KEY_2",
+            "GOOGLE_API_KEY_3"
+        ]
+        
+        for pattern in patterns:
+            key = os.getenv(pattern)
+            if key and key not in keys:
+                keys.append(key)
+        
+        # Also check for comma-separated keys
+        multi_keys = os.getenv("GOOGLE_MAPS_API_KEYS", "")
+        if multi_keys:
+            for key in multi_keys.split(","):
+                key = key.strip()
+                if key and key not in keys:
+                    keys.append(key)
+        
+        return keys
+    
+    def _init_database(self):
+        """Initialize SQLite database for API usage tracking"""
+        with self.db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create tables
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    key_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_key TEXT UNIQUE NOT NULL,
+                    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active BOOLEAN DEFAULT 1,
+                    monthly_limit INTEGER DEFAULT 50000,
+                    notes TEXT
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS usage_log (
+                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_key TEXT NOT NULL,
+                    request_type TEXT NOT NULL,
+                    request_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    success BOOLEAN DEFAULT 1,
+                    response_code INTEGER,
+                    image_type TEXT,
+                    route_id TEXT,
+                    turn_id TEXT,
+                    latitude REAL,
+                    longitude REAL,
+                    file_path TEXT,
+                    error_message TEXT
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS monthly_usage (
+                    usage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_key TEXT NOT NULL,
+                    year INTEGER NOT NULL,
+                    month INTEGER NOT NULL,
+                    total_requests INTEGER DEFAULT 0,
+                    successful_requests INTEGER DEFAULT 0,
+                    failed_requests INTEGER DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(api_key, year, month)
+                )
+            """)
+            
+            # Add indexes
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_date ON usage_log(request_date)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_key ON usage_log(api_key)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_monthly_key ON monthly_usage(api_key)")
+            
+            # Register API keys
+            for key in self.api_keys:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO api_keys (api_key) VALUES (?)
+                """, (key,))
+            
+            conn.commit()
+            conn.close()
+    
+    def _get_available_key(self) -> Optional[str]:
+        """Get an available API key that hasn't exceeded quota"""
+        if not self.api_keys:
+            return None
+        
+        # If only one key, return it (backward compatibility)
+        if len(self.api_keys) == 1:
+            return self.api_keys[0]
+        
+        with self.db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            
+            # Shuffle keys for random selection
+            available_keys = self.api_keys.copy()
+            random.shuffle(available_keys)
+            
+            for key in available_keys:
+                # Check if key is active
+                cursor.execute("""
+                    SELECT is_active, monthly_limit FROM api_keys WHERE api_key = ?
+                """, (key,))
+                result = cursor.fetchone()
+                
+                if result and not result[0]:  # Key is deactivated
+                    continue
+                
+                monthly_limit = result[1] if result else 50000
+                
+                # Check current month's usage
+                cursor.execute("""
+                    SELECT total_requests FROM monthly_usage 
+                    WHERE api_key = ? AND year = ? AND month = ?
+                """, (key, current_year, current_month))
+                
+                usage_result = cursor.fetchone()
+                current_usage = usage_result[0] if usage_result else 0
+                
+                if current_usage < monthly_limit:
+                    conn.close()
+                    logger.info(f"🔑 Selected API key with {monthly_limit - current_usage} requests remaining this month")
+                    return key
+            
+            conn.close()
+            logger.error("❌ All API keys have exceeded their monthly quotas!")
+            return None
+    
+    def _log_api_usage(self, api_key: str, request_type: str, success: bool, 
+                      response_code: int = None, image_type: str = None,
+                      route_id: str = None, turn_id: str = None,
+                      latitude: float = None, longitude: float = None,
+                      file_path: str = None, error_message: str = None):
+        """Log API usage to database"""
+        with self.db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Log the request
+            cursor.execute("""
+                INSERT INTO usage_log (
+                    api_key, request_type, success, response_code, image_type,
+                    route_id, turn_id, latitude, longitude, file_path, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (api_key, request_type, success, response_code, image_type,
+                  route_id, turn_id, latitude, longitude, file_path, error_message))
+            
+            # Update monthly usage
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            
+            cursor.execute("""
+                INSERT INTO monthly_usage (api_key, year, month, total_requests, 
+                                         successful_requests, failed_requests)
+                VALUES (?, ?, ?, 1, ?, ?)
+                ON CONFLICT(api_key, year, month) DO UPDATE SET
+                    total_requests = total_requests + 1,
+                    successful_requests = successful_requests + ?,
+                    failed_requests = failed_requests + ?,
+                    last_updated = CURRENT_TIMESTAMP
+            """, (api_key, current_year, current_month, 
+                  1 if success else 0, 0 if success else 1,
+                  1 if success else 0, 0 if success else 1))
+            
+            conn.commit()
+            conn.close()
+    
+    def get_usage_stats(self, api_key: str = None) -> Dict[str, Any]:
+        """Get usage statistics for API keys"""
+        with self.db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            
+            if api_key:
+                # Stats for specific key
+                cursor.execute("""
+                    SELECT 
+                        mu.total_requests,
+                        mu.successful_requests,
+                        mu.failed_requests,
+                        ak.monthly_limit
+                    FROM monthly_usage mu
+                    JOIN api_keys ak ON mu.api_key = ak.api_key
+                    WHERE mu.api_key = ? AND mu.year = ? AND mu.month = ?
+                """, (api_key, current_year, current_month))
+                
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        'api_key': api_key[:10] + '...',
+                        'total_requests': result[0],
+                        'successful_requests': result[1],
+                        'failed_requests': result[2],
+                        'monthly_limit': result[3],
+                        'remaining': result[3] - result[0]
+                    }
+            else:
+                # Stats for all keys
+                cursor.execute("""
+                    SELECT 
+                        mu.api_key,
+                        mu.total_requests,
+                        mu.successful_requests,
+                        mu.failed_requests,
+                        ak.monthly_limit,
+                        ak.is_active
+                    FROM monthly_usage mu
+                    JOIN api_keys ak ON mu.api_key = ak.api_key
+                    WHERE mu.year = ? AND mu.month = ?
+                """, (current_year, current_month))
+                
+                results = cursor.fetchall()
+                stats = []
+                for row in results:
+                    stats.append({
+                        'api_key': row[0][:10] + '...',
+                        'total_requests': row[1],
+                        'successful_requests': row[2],
+                        'failed_requests': row[3],
+                        'monthly_limit': row[4],
+                        'remaining': row[4] - row[1],
+                        'is_active': row[5]
+                    })
+                
+                conn.close()
+                return {'keys': stats, 'total_keys': len(self.api_keys)}
+            
+            conn.close()
+            return {}
+    
     def _rate_limit(self):
         """Implement rate limiting to avoid API quota issues"""
         current_time = time.time()
@@ -55,87 +331,6 @@ class GoogleMapsImageDownloader:
         if time_since_last < self.request_delay:
             time.sleep(self.request_delay - time_since_last)
         self.last_request_time = time.time()
-    
-    def lat_lon_to_tile(self, lat: float, lon: float, zoom: int) -> Tuple[int, int]:
-        """Convert latitude/longitude to tile coordinates"""
-        lat_rad = math.radians(lat)
-        n = 2.0 ** zoom
-        x = int((lon + 180.0) / 360.0 * n)
-        y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
-        return x, y
-    
-    def download_tiles_and_stitch(self, lat: float, lng: float, zoom: int, 
-                                  tile_type: str, size: Tuple[int, int] = (640, 480)) -> Optional[bytes]:
-        """
-        Download tiles from TileServer and stitch them together
-        
-        Args:
-            lat: Latitude
-            lng: Longitude
-            zoom: Zoom level
-            tile_type: 'india-satellite' or 'india'
-            size: Desired output size (width, height)
-            
-        Returns:
-            Stitched image as bytes or None
-        """
-        try:
-            # Calculate center tile
-            center_x, center_y = self.lat_lon_to_tile(lat, lng, zoom)
-            
-            # Calculate how many tiles we need (256px per tile)
-            tiles_x = math.ceil(size[0] / 256)
-            tiles_y = math.ceil(size[1] / 256)
-            
-            # Download tiles
-            tiles = {}
-            for dx in range(-(tiles_x//2), (tiles_x//2) + 1):
-                for dy in range(-(tiles_y//2), (tiles_y//2) + 1):
-                    tile_x = center_x + dx
-                    tile_y = center_y + dy
-                    
-                    url = f"{self.tileserver_url}/data/{tile_type}/{zoom}/{tile_x}/{tile_y}.png"
-                    
-                    self._rate_limit()
-                    response = requests.get(url, timeout=10)
-                    
-                    if response.status_code == 200:
-                        img = Image.open(io.BytesIO(response.content))
-                        tiles[(dx, dy)] = img
-                    else:
-                        logger.warning(f"Failed to download tile {tile_x},{tile_y}: {response.status_code}")
-            
-            if not tiles:
-                return None
-            
-            # Calculate canvas size
-            canvas_width = tiles_x * 256
-            canvas_height = tiles_y * 256
-            
-            # Create canvas and paste tiles
-            canvas = Image.new('RGB', (canvas_width, canvas_height))
-            
-            for (dx, dy), tile_img in tiles.items():
-                x = (dx + tiles_x//2) * 256
-                y = (dy + tiles_y//2) * 256
-                canvas.paste(tile_img, (x, y))
-            
-            # Crop to desired size from center
-            left = (canvas_width - size[0]) // 2
-            top = (canvas_height - size[1]) // 2
-            right = left + size[0]
-            bottom = top + size[1]
-            
-            cropped = canvas.crop((left, top, right, bottom))
-            
-            # Convert to bytes
-            output = io.BytesIO()
-            cropped.save(output, format='PNG')
-            return output.getvalue()
-            
-        except Exception as e:
-            logger.error(f"Error downloading and stitching tiles: {e}")
-            return None
     
     def get_route_image_folder(self, route_id: str) -> Path:
         """Get or create folder for route images"""
@@ -150,7 +345,6 @@ class GoogleMapsImageDownloader:
                              force_download: bool = False) -> Optional[str]:
         """
         Download street view image for a specific location
-        (Always uses Google Maps API)
         
         Args:
             lat: Latitude
@@ -175,10 +369,16 @@ class GoogleMapsImageDownloader:
             filename = f"streetview_{turn_id}_h{int(heading)}.jpg"
             filepath = route_folder / filename
             
-            # Check if image already exists
+            # Check if image already exists (CACHING LOGIC PRESERVED)
             if filepath.exists() and not force_download:
                 logger.info(f"✅ Street view already exists: {filepath}")
                 return str(filepath)
+            
+            # Get available API key
+            api_key = self._get_available_key()
+            if not api_key:
+                logger.error("❌ No available API keys with remaining quota")
+                return None
             
             # Rate limit before making API call
             self._rate_limit()
@@ -189,7 +389,7 @@ class GoogleMapsImageDownloader:
                 'fov': fov,
                 'pitch': pitch,
                 'heading': heading,
-                'key': self.api_key
+                'key': api_key
             }
             
             logger.info(f"Downloading street view for turn {turn_id} at {lat},{lng}")
@@ -201,13 +401,55 @@ class GoogleMapsImageDownloader:
                     f.write(response.content)
                 
                 logger.info(f"✅ Street view saved: {filepath}")
+                
+                # Log successful usage
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='streetview',
+                    success=True,
+                    response_code=200,
+                    image_type='street_view',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    file_path=str(filepath)
+                )
+                
                 return str(filepath)
             else:
                 logger.error(f"Failed to download street view: {response.status_code}")
+                
+                # Log failed usage
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='streetview',
+                    success=False,
+                    response_code=response.status_code,
+                    image_type='street_view',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    error_message=f"HTTP {response.status_code}"
+                )
+                
                 return None
                 
         except Exception as e:
             logger.error(f"Error downloading street view: {e}")
+            if 'api_key' in locals():
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='streetview',
+                    success=False,
+                    image_type='street_view',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    error_message=str(e)
+                )
             return None
     
     def download_satellite_image(self, lat: float, lng: float, 
@@ -216,7 +458,6 @@ class GoogleMapsImageDownloader:
                            force_download: bool = False) -> Optional[str]:
         """
         Download satellite image for a specific location
-        Uses TileServer if configured, otherwise Google Maps
         
         Args:
             lat: Latitude
@@ -235,41 +476,30 @@ class GoogleMapsImageDownloader:
             filename = f"satellite_{turn_id}.png"
             filepath = route_folder / filename
             
-            # Check if image already exists
+            # Check if image already exists (CACHING LOGIC PRESERVED)
             if filepath.exists() and not force_download:
                 logger.info(f"✅ Satellite view already exists: {filepath}")
                 return str(filepath)
             
+            # Get available API key
+            api_key = self._get_available_key()
+            if not api_key:
+                logger.error("❌ No available API keys with remaining quota")
+                return None
+            
             # Rate limit before making API call
             self._rate_limit()
             
-            if self.use_tileserver:
-                # Use TileServer GL
-                logger.info(f"Downloading satellite view from TileServer for turn {turn_id}")
-                image_data = self.download_tiles_and_stitch(
-                    lat, lng, zoom, 'india-satellite', size=(640, 480)
-                )
-                
-                if image_data:
-                    with open(filepath, 'wb') as f:
-                        f.write(image_data)
-                    logger.info(f"✅ Satellite view saved from TileServer: {filepath}")
-                    return str(filepath)
-                else:
-                    logger.error("Failed to download from TileServer")
-                    # Fall back to Google Maps if TileServer fails
-                    
-            # Use Google Maps API (fallback or default)
             params = {
                 'center': f'{lat},{lng}',
                 'zoom': zoom,
                 'size': '640x480',
                 'maptype': 'satellite',
-                'key': self.api_key,
+                'key': api_key,
                 'scale': 2  # Higher quality
             }
             
-            logger.info(f"Downloading satellite view from Google Maps for turn {turn_id}")
+            logger.info(f"Downloading satellite view for turn {turn_id} at {lat},{lng}")
             response = requests.get(self.static_map_url, params=params, timeout=30)
             
             if response.status_code == 200:
@@ -278,13 +508,55 @@ class GoogleMapsImageDownloader:
                     f.write(response.content)
                 
                 logger.info(f"✅ Satellite view saved: {filepath}")
+                
+                # Log successful usage
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap',
+                    success=True,
+                    response_code=200,
+                    image_type='satellite',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    file_path=str(filepath)
+                )
+                
                 return str(filepath)
             else:
                 logger.error(f"Failed to download satellite view: {response.status_code}")
+                
+                # Log failed usage
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap',
+                    success=False,
+                    response_code=response.status_code,
+                    image_type='satellite',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    error_message=f"HTTP {response.status_code}"
+                )
+                
                 return None
                 
         except Exception as e:
             logger.error(f"Error downloading satellite view: {e}")
+            if 'api_key' in locals():
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap',
+                    success=False,
+                    image_type='satellite',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    error_message=str(e)
+                )
             return None
 
     def download_roadmap_with_markers(self, lat: float, lng: float,
@@ -294,7 +566,6 @@ class GoogleMapsImageDownloader:
                                     force_download: bool = False) -> Optional[str]:
         """
         Download roadmap with risk marker for a specific location
-        Uses TileServer if configured, otherwise Google Maps
         
         Args:
             lat: Latitude
@@ -314,37 +585,20 @@ class GoogleMapsImageDownloader:
             filename = f"roadmap_{turn_id}.png"
             filepath = route_folder / filename
             
-            # Check if image already exists
+            # Check if image already exists (CACHING LOGIC PRESERVED)
             if filepath.exists() and not force_download:
                 logger.info(f"✅ Roadmap already exists: {filepath}")
                 return str(filepath)
             
+            # Get available API key
+            api_key = self._get_available_key()
+            if not api_key:
+                logger.error("❌ No available API keys with remaining quota")
+                return None
+            
             # Rate limit before making API call
             self._rate_limit()
             
-            if self.use_tileserver:
-                # Use TileServer GL
-                logger.info(f"Downloading roadmap from TileServer for turn {turn_id}")
-                image_data = self.download_tiles_and_stitch(
-                    lat, lng, zoom, 'india', size=(640, 480)
-                )
-                
-                if image_data:
-                    # Add marker overlay on the image
-                    img = Image.open(io.BytesIO(image_data))
-                    
-                    # TODO: Add marker drawing logic here if needed
-                    # For now, just save the base map
-                    
-                    with open(filepath, 'wb') as f:
-                        img.save(f, 'PNG')
-                    logger.info(f"✅ Roadmap saved from TileServer: {filepath}")
-                    return str(filepath)
-                else:
-                    logger.error("Failed to download from TileServer")
-                    # Fall back to Google Maps if TileServer fails
-            
-            # Use Google Maps API (fallback or default)
             # Determine marker color based on risk
             marker_colors = {
                 'critical': 'red',
@@ -360,11 +614,11 @@ class GoogleMapsImageDownloader:
                 'size': '640x480',
                 'maptype': 'roadmap',
                 'markers': f'color:{color}|size:large|{lat},{lng}',
-                'key': self.api_key,
+                'key': api_key,
                 'scale': 2
             }
             
-            logger.info(f"Downloading roadmap from Google Maps for turn {turn_id}")
+            logger.info(f"Downloading roadmap for turn {turn_id}")
             response = requests.get(self.static_map_url, params=params, timeout=30)
             
             if response.status_code == 200:
@@ -372,13 +626,55 @@ class GoogleMapsImageDownloader:
                     f.write(response.content)
                 
                 logger.info(f"✅ Roadmap saved: {filepath}")
+                
+                # Log successful usage
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap',
+                    success=True,
+                    response_code=200,
+                    image_type='roadmap',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    file_path=str(filepath)
+                )
+                
                 return str(filepath)
             else:
                 logger.error(f"Failed to download roadmap: {response.status_code}")
+                
+                # Log failed usage
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap',
+                    success=False,
+                    response_code=response.status_code,
+                    image_type='roadmap',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    error_message=f"HTTP {response.status_code}"
+                )
+                
                 return None
                 
         except Exception as e:
             logger.error(f"Error downloading roadmap: {e}")
+            if 'api_key' in locals():
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap',
+                    success=False,
+                    image_type='roadmap',
+                    route_id=route_id,
+                    turn_id=turn_id,
+                    latitude=lat,
+                    longitude=lng,
+                    error_message=str(e)
+                )
             return None
     
     def get_image_status(self, route_id: str, turn_id: str) -> Dict[str, bool]:
@@ -596,7 +892,6 @@ class GoogleMapsImageDownloader:
                     file_path.unlink()
                     logger.info(f"Deleted old image: {file_path}")
     
-    # Additional helper method to clear cache for specific route
     def clear_route_cache(self, route_id: str):
         """
         Clear all cached images for a specific route
@@ -608,7 +903,6 @@ class GoogleMapsImageDownloader:
             logger.info(f"Cleared image cache for route {route_id}")
             route_folder.mkdir(parents=True, exist_ok=True)
 
-    # Method to get cache statistics
     def get_cache_stats(self, route_id: str) -> Dict[str, Any]:
         """
         Get statistics about cached images for a route
@@ -648,17 +942,134 @@ class GoogleMapsImageDownloader:
             'image_types': image_types,
             'folder_path': str(route_folder)
         }
-
-# Example usage:
-if __name__ == "__main__":
-    # Initialize with TileServer support
-    downloader = GoogleMapsImageDownloader(
-        api_key="YOUR_GOOGLE_API_KEY",
-        tileserver_url="http://69.62.73.201:8080",
-        use_tileserver=True  # Enable TileServer for satellite/roadmap
-    )
     
-    # Download images for a turn
+    # Additional methods for API key management (only used when multiple keys are configured)
+    
+    def add_api_key(self, api_key: str, monthly_limit: int = 50000, notes: str = None):
+        """Add a new API key to the system"""
+        if api_key not in self.api_keys:
+            self.api_keys.append(api_key)
+        
+        with self.db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO api_keys (api_key, monthly_limit, notes)
+                    VALUES (?, ?, ?)
+                """, (api_key, monthly_limit, notes))
+                
+                conn.commit()
+                logger.info(f"✅ Added new API key with {monthly_limit} monthly limit")
+                
+            except sqlite3.IntegrityError:
+                logger.warning(f"⚠️ API key already exists in database")
+            
+            conn.close()
+    
+    def get_usage_report(self, start_date: str = None, end_date: str = None) -> Dict[str, Any]:
+        """Generate usage report for all API keys"""
+        with self.db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Default to current month if no dates provided
+            if not start_date:
+                start_date = datetime.now().replace(day=1).strftime('%Y-%m-%d')
+            if not end_date:
+                end_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # Get usage summary
+            cursor.execute("""
+                SELECT 
+                    api_key,
+                    COUNT(*) as total_requests,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successful,
+                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed,
+                    COUNT(DISTINCT route_id) as unique_routes,
+                    COUNT(DISTINCT turn_id) as unique_turns
+                FROM usage_log
+                WHERE DATE(request_date) BETWEEN ? AND ?
+                GROUP BY api_key
+            """, (start_date, end_date))
+            
+            results = cursor.fetchall()
+            
+            report = {
+                'period': f"{start_date} to {end_date}",
+                'api_keys': []
+            }
+            
+            total_requests = 0
+            total_successful = 0
+            total_failed = 0
+            
+            for row in results:
+                key_report = {
+                    'api_key': row[0][:10] + '...',
+                    'total_requests': row[1],
+                    'successful': row[2],
+                    'failed': row[3],
+                    'success_rate': round(row[2] / row[1] * 100, 2) if row[1] > 0 else 0,
+                    'unique_routes': row[4],
+                    'unique_turns': row[5]
+                }
+                
+                # Get monthly limit
+                cursor.execute("""
+                    SELECT monthly_limit FROM api_keys WHERE api_key = ?
+                """, (row[0],))
+                limit_result = cursor.fetchone()
+                key_report['monthly_limit'] = limit_result[0] if limit_result else 50000
+                key_report['usage_percentage'] = round(row[1] / key_report['monthly_limit'] * 100, 2)
+                
+                report['api_keys'].append(key_report)
+                
+                total_requests += row[1]
+                total_successful += row[2]
+                total_failed += row[3]
+            
+            report['summary'] = {
+                'total_requests': total_requests,
+                'total_successful': total_successful,
+                'total_failed': total_failed,
+                'overall_success_rate': round(total_successful / total_requests * 100, 2) if total_requests > 0 else 0
+            }
+            
+            conn.close()
+            return report
+
+
+# ============================================================================
+# OPTIONAL EXAMPLE USAGE - FOR TESTING ONLY
+# ============================================================================
+if __name__ == "__main__":
+    # Example: Multiple API keys can be provided
+    api_keys = [
+        os.getenv('GOOGLE_MAPS_API_KEY_1'),
+        os.getenv('GOOGLE_MAPS_API_KEY_2'),
+        os.getenv('GOOGLE_MAPS_API_KEY_3'),
+    ]
+    
+    # Filter out None values
+    api_keys = [k for k in api_keys if k]
+    
+    # Or load from comma-separated environment variable
+    if not api_keys:
+        multi_keys = os.getenv('GOOGLE_MAPS_API_KEYS', '')
+        if multi_keys:
+            api_keys = [k.strip() for k in multi_keys.split(',') if k.strip()]
+    
+    # For backward compatibility - also works with single key
+    if not api_keys:
+        single_key = os.getenv('GOOGLE_MAPS_API_KEY')
+        if single_key:
+            api_keys = [single_key]
+    
+    downloader = GoogleMapsImageDownloader(api_key=api_keys if len(api_keys) > 1 else (api_keys[0] if api_keys else None))
+    
+    # Test download
     turn_data = {
         '_id': '12345',
         'latitude': 19.0760,
@@ -669,3 +1080,12 @@ if __name__ == "__main__":
     
     images = downloader.download_turn_images(turn_data, 'test_route')
     print(f"Downloaded images: {images}")
+    
+    # Get usage statistics (only works with multiple keys)
+    if len(api_keys) > 1:
+        stats = downloader.get_usage_stats()
+        print(f"API Usage Stats: {json.dumps(stats, indent=2)}")
+        
+        # Generate usage report
+        report = downloader.get_usage_report()
+        print(f"Usage Report: {json.dumps(report, indent=2)}")
