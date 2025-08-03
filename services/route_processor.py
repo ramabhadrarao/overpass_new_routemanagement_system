@@ -325,25 +325,107 @@ class RouteProcessor:
         
         return {'weather_conditions': weather_conditions}
     
+    # def _get_visualcrossing_weather(self, point: Dict, coordinates: List[Dict], index: int) -> Optional[Dict]:
+    #     """Get weather from VisualCrossing API"""
+    #     try:
+    #         url = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+    #         params = {
+    #             'location': f"{point['latitude']},{point['longitude']}",
+    #             'key': self.visualcrossing_api_key,
+    #             'include': 'current,days',
+    #             'elements': 'datetime,temp,humidity,precipprob,windspeed,visibility,conditions'
+    #         }
+            
+    #         start_time = time.time()
+    #         response = requests.get(url, params=params, timeout=10)
+    #         response_time = (time.time() - start_time) * 1000
+            
+    #         # Log API call
+    #         self.api_log_model.log_api_call(
+    #             route_id=None,
+    #             api_name='visualcrossing',
+    #             endpoint=url,
+    #             request_data=params,
+    #             response_data={'status': 'success' if response.status_code == 200 else 'failed'},
+    #             status_code=response.status_code,
+    #             response_time=response_time
+    #         )
+            
+    #         if response.status_code == 200:
+    #             data = response.json()
+    #             current = data.get('currentConditions', {})
+                
+    #             # Determine season and risk
+    #             temp = current.get('temp', 25)
+    #             conditions = current.get('conditions', 'Clear').lower()
+                
+    #             if temp > 35:
+    #                 season = 'summer'
+    #             elif temp < 15:
+    #                 season = 'winter'
+    #             elif 'rain' in conditions:
+    #                 season = 'monsoon'
+    #             else:
+    #                 season = 'spring'
+                
+    #             # Calculate risk
+    #             risk_score = 3
+    #             if 'rain' in conditions or 'storm' in conditions:
+    #                 risk_score += 4
+    #             elif 'fog' in conditions or 'mist' in conditions:
+    #                 risk_score += 5
+    #             elif temp > 40 or temp < 5:
+    #                 risk_score += 3
+                
+    #             return {
+    #                 'latitude': point['latitude'],
+    #                 'longitude': point['longitude'],
+    #                 'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
+    #                 'season': season,
+    #                 'weather_condition': 'rainy' if 'rain' in conditions else 'foggy' if 'fog' in conditions else 'clear',
+    #                 'average_temperature': temp,
+    #                 'humidity': current.get('humidity', 60),
+    #                 'pressure': current.get('pressure', 1013),
+    #                 'visibility_km': current.get('visibility', 10),
+    #                 'wind_speed_kmph': current.get('windspeed', 10),
+    #                 'wind_direction': current.get('winddir', 0),
+    #                 'precipitation_mm': current.get('precip', 0),
+    #                 'precipitation_probability': current.get('precipprob', 0),
+    #                 'road_surface_condition': 'wet' if 'rain' in conditions else 'dry',
+    #                 'risk_score': min(10, risk_score),
+    #                 'monsoon_risk': 8 if season == 'monsoon' else 3,
+    #                 'driving_condition_impact': 'severe' if risk_score >= 7 else 'moderate' if risk_score >= 5 else 'minimal',
+    #                 'data_source': 'VISUALCROSSING_API'
+    #             }
+                
+    #     except Exception as e:
+    #         logger.error(f"Error fetching VisualCrossing weather: {e}")
+    #         return self._get_fallback_weather(point, index, coordinates)
     def _get_visualcrossing_weather(self, point: Dict, coordinates: List[Dict], index: int) -> Optional[Dict]:
-        """Get weather from VisualCrossing API"""
+        """Get weather from ERA5 API instead of VisualCrossing"""
         try:
-            url = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+            # Use ERA5 API with static IP
+            url = "http://43.250.40.133:6000/api/weather/visualcrossing-compatible"
+            
+            # ERA5 API key (replace with your actual key or get from env)
+            era5_api_key = "h4DSeoxB88OwRw7rh42sWJlx8BphPHCi"
+            
             params = {
-                'location': f"{point['latitude']},{point['longitude']}",
-                'key': self.visualcrossing_api_key,
-                'include': 'current,days',
-                'elements': 'datetime,temp,humidity,precipprob,windspeed,visibility,conditions'
+                'location': f"{point['latitude']},{point['longitude']}"
+            }
+            
+            headers = {
+                'X-API-Key': era5_api_key
             }
             
             start_time = time.time()
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, headers=headers, timeout=10)
             response_time = (time.time() - start_time) * 1000
             
             # Log API call
             self.api_log_model.log_api_call(
                 route_id=None,
-                api_name='visualcrossing',
+                api_name='era5_weather',  # Changed from 'visualcrossing'
                 endpoint=url,
                 request_data=params,
                 response_data={'status': 'success' if response.status_code == 200 else 'failed'},
@@ -395,11 +477,16 @@ class RouteProcessor:
                     'risk_score': min(10, risk_score),
                     'monsoon_risk': 8 if season == 'monsoon' else 3,
                     'driving_condition_impact': 'severe' if risk_score >= 7 else 'moderate' if risk_score >= 5 else 'minimal',
-                    'data_source': 'VISUALCROSSING_API'
+                    'data_source': 'ERA5_REANALYSIS'  # Changed from 'VISUALCROSSING_API'
                 }
-                
+            else:
+                # Log the error
+                logger.error(f"ERA5 API returned status code: {response.status_code}")
+                logger.error(f"Response: {response.text}")
+                return self._get_fallback_weather(point, index, coordinates)
+                    
         except Exception as e:
-            logger.error(f"Error fetching VisualCrossing weather: {e}")
+            logger.error(f"Error fetching ERA5 weather: {e}")
             return self._get_fallback_weather(point, index, coordinates)
     
     def _get_traffic_data_fast(self, route_id: str, coordinates: List[Dict]) -> Dict:
