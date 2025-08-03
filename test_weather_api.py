@@ -1,345 +1,317 @@
-#!/usr/bin/env python3
-"""
-Enhanced test script for ERA5 Seasonal Weather API with debugging
-Handles cases where data_available is False
-"""
-
 import requests
 import json
-import time
+import pandas as pd
+import numpy as np
 from datetime import datetime
-from typing import List, Dict, Optional
-import sys
-import os
+from typing import List, Dict, Tuple
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Configuration
-ERA5_API_KEY = "h4DSeoxB88OwRw7rh42sWJlx8BphPHCi"
-ERA5_BASE_URL = "http://43.250.40.133:6000"
-
-# Test route coordinates (Mumbai to Delhi route sample)
-TEST_COORDINATES = [
-    {"latitude": 19.0760, "longitude": 72.8777, "name": "Mumbai_Start"},
-    {"latitude": 21.1458, "longitude": 73.7263, "name": "Nashik"},
-    {"latitude": 23.0225, "longitude": 74.5671, "name": "Indore"},
-    {"latitude": 26.9124, "longitude": 75.7873, "name": "Jaipur"},
-    {"latitude": 28.6139, "longitude": 77.2090, "name": "Delhi_End"}
-]
-
-# Alternative test coordinates (in case above don't have data)
-ALTERNATIVE_COORDINATES = [
-    {"latitude": 28.7041, "longitude": 77.1025, "name": "Delhi_NCR"},
-    {"latitude": 19.0760, "longitude": 72.8777, "name": "Mumbai"},
-    {"latitude": 13.0827, "longitude": 80.2707, "name": "Chennai"},
-    {"latitude": 22.5726, "longitude": 88.3639, "name": "Kolkata"},
-    {"latitude": 12.9716, "longitude": 77.5946, "name": "Bangalore"}
-]
-
-class EnhancedWeatherTester:
-    def __init__(self):
-        self.api_key = ERA5_API_KEY
-        self.base_url = ERA5_BASE_URL
-        self.test_results = []
-        
-    def test_info_endpoint(self):
-        """Test the info endpoint to see available data"""
-        print("\n" + "="*60)
-        print("TEST: API Info Endpoint")
-        print("="*60)
-        
-        try:
-            response = requests.get(f"{self.base_url}/api/weather/info", timeout=5)
-            print(f"Status Code: {response.status_code}")
-            
-            if response.status_code == 200:
-                info = response.json()
-                print(f"\nAvailable Data Information:")
-                print(f"  Total Fields: {info.get('total_fields', 'N/A')}")
-                print(f"  Date Range: {info.get('date_range', {}).get('start', 'N/A')} to {info.get('date_range', {}).get('end', 'N/A')}")
-                print(f"  Available Dates: {len(info.get('available_dates', []))}")
-                if info.get('available_dates'):
-                    print(f"    First few dates: {info['available_dates'][:5]}")
-                print(f"  Parameters: {', '.join(info.get('parameters', []))}")
-                return info
-            else:
-                print(f"ERROR: {response.text[:200]}")
-                return None
-                
-        except Exception as e:
-            print(f"ERROR: {e}")
-            return None
+class RouteWeatherAnalyzer:
+    """Analyze historical weather data along a route for all seasons"""
     
-    def test_single_point_detailed(self, lat: float, lon: float, date: Optional[int] = None):
-        """Test single point with detailed debugging"""
-        print("\n" + "="*60)
-        print(f"TEST: Single Point Detailed (lat: {lat}, lon: {lon})")
-        if date:
-            print(f"Date: {date}")
-        print("="*60)
+    def __init__(self, api_url: str, api_key: str):
+        self.api_url = api_url
+        self.api_key = api_key
+        self.headers = {'X-API-Key': api_key}
         
-        try:
-            headers = {'X-API-Key': self.api_key}
-            params = {'latitude': lat, 'longitude': lon}
-            if date:
-                params['date'] = date
-            
-            response = requests.get(
-                f"{self.base_url}/api/weather/point",
-                params=params,
-                headers=headers,
-                timeout=10
-            )
-            
-            print(f"Status Code: {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                print(f"\nFull Response:")
-                print(json.dumps(data, indent=2))
-                
-                # Analyze response
-                print(f"\nResponse Analysis:")
-                print(f"  Data Available: {data.get('data_available', False)}")
-                print(f"  Has Temperature: {'temperature' in data}")
-                print(f"  Fields Present: {list(data.keys())}")
-                
-                return data
-            else:
-                print(f"ERROR Response: {response.text[:500]}")
-                return None
-                
-        except Exception as e:
-            print(f"ERROR: {e}")
-            return None
+    def load_route_from_csv(self, csv_file: str) -> List[Dict]:
+        """Load route coordinates from CSV file"""
+        df = pd.read_csv(csv_file, header=None, names=['latitude', 'longitude'])
+        
+        # Create route points with names
+        route_points = []
+        for idx, (lat, lon) in enumerate(df.values):
+            route_points.append({
+                'latitude': lat,
+                'longitude': lon,
+                'name': f'Point_{idx+1}'
+            })
+        
+        return route_points
     
-    def test_seasonal_with_fallback(self, coordinates: List[Dict]):
-        """Test seasonal API with better error handling"""
-        print("\n" + "="*60)
-        print(f"TEST: Seasonal Weather API Enhanced ({len(coordinates)} coordinates)")
-        print("="*60)
+    def fetch_seasonal_weather(self, coordinates: List[Dict]) -> Dict:
+        """Fetch weather data for all seasons from the API"""
+        payload = {'coordinates': coordinates}
         
         try:
-            headers = {
-                'Content-Type': 'application/json',
-                'X-API-Key': self.api_key
-            }
-            
-            payload = {"coordinates": coordinates}
-            
             response = requests.post(
-                f"{self.base_url}/api/weather/route/seasonal",
+                self.api_url,
+                headers=self.headers,
                 json=payload,
-                headers=headers,
                 timeout=30
             )
-            
-            print(f"Status Code: {response.status_code}")
-            
-            if response.status_code == 200:
-                seasonal_data = response.json()
-                
-                # Save full response for debugging
-                with open('seasonal_response_debug.json', 'w') as f:
-                    json.dump(seasonal_data, f, indent=2)
-                print(f"📄 Full response saved to: seasonal_response_debug.json")
-                
-                # Analyze each season
-                print(f"\nDetailed Season Analysis:")
-                data_points_with_values = 0
-                data_points_without_values = 0
-                
-                for season_idx, season_data in enumerate(seasonal_data):
-                    if isinstance(season_data, dict):
-                        season_name = season_data.get('season', 'unknown')
-                        route_weather = season_data.get('route_weather', [])
-                        
-                        print(f"\n{season_name.upper()} Season:")
-                        print(f"  Total Points: {len(route_weather)}")
-                        
-                        # Check data availability
-                        points_with_data = 0
-                        points_without_data = 0
-                        
-                        for point in route_weather:
-                            if point.get('data_available', False):
-                                points_with_data += 1
-                                data_points_with_values += 1
-                            else:
-                                points_without_data += 1
-                                data_points_without_values += 1
-                        
-                        print(f"  Points with data: {points_with_data}")
-                        print(f"  Points without data: {points_without_data}")
-                        
-                        # Show sample point
-                        if route_weather:
-                            sample = route_weather[0]
-                            print(f"  Sample Point:")
-                            print(f"    Name: {sample.get('name', 'N/A')}")
-                            print(f"    Data Available: {sample.get('data_available', False)}")
-                            print(f"    Temperature: {sample.get('temperature', 'NOT PRESENT')}")
-                            print(f"    Fields: {list(sample.keys())}")
-                
-                print(f"\n📊 Summary:")
-                print(f"  Total data points: {data_points_with_values + data_points_without_values}")
-                print(f"  Points with data: {data_points_with_values}")
-                print(f"  Points without data: {data_points_without_values}")
-                
-                if data_points_without_values > 0:
-                    print(f"\n⚠️  WARNING: {data_points_without_values} points have no data available!")
-                    print("  This might be due to:")
-                    print("  1. Coordinates outside the GRIB data coverage area")
-                    print("  2. Missing data for the specified dates")
-                    print("  3. GRIB file not containing data for these locations")
-                
-                return seasonal_data
-            else:
-                print(f"ERROR Response: {response.text[:500]}")
-                return None
-                
-        except Exception as e:
-            print(f"ERROR: {e}")
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching weather data: {e}")
             return None
     
-    def find_working_coordinates(self):
-        """Find coordinates that have actual data"""
-        print("\n" + "="*60)
-        print("TEST: Finding Coordinates with Available Data")
-        print("="*60)
+    def parse_weather_data(self, raw_data: Dict) -> pd.DataFrame:
+        """Parse weather data into a structured DataFrame"""
+        records = []
         
-        working_coords = []
+        if not raw_data:
+            return pd.DataFrame()
         
-        # Test a grid of coordinates
-        test_points = [
-            {"lat": 28.6139, "lon": 77.2090, "name": "Delhi"},
-            {"lat": 19.0760, "lon": 72.8777, "name": "Mumbai"},
-            {"lat": 12.9716, "lon": 77.5946, "name": "Bangalore"},
-            {"lat": 22.5726, "lon": 88.3639, "name": "Kolkata"},
-            {"lat": 23.0225, "lon": 72.5714, "name": "Ahmedabad"},
-            {"lat": 17.3850, "lon": 78.4867, "name": "Hyderabad"},
-            {"lat": 26.9124, "lon": 75.7873, "name": "Jaipur"},
-            {"lat": 30.7333, "lon": 76.7794, "name": "Chandigarh"},
-            {"lat": 11.0168, "lon": 76.9558, "name": "Coimbatore"},
-            {"lat": 21.1702, "lon": 72.8311, "name": "Surat"}
-        ]
+        # Handle both list and dict responses
+        data = raw_data if isinstance(raw_data, list) else [raw_data]
         
-        print(f"Testing {len(test_points)} locations...")
-        
-        for point in test_points:
-            headers = {'X-API-Key': self.api_key}
-            params = {'latitude': point['lat'], 'longitude': point['lon']}
+        for seasonal_data in data:
+            season = seasonal_data.get('season', 'unknown')
+            avg_temp = seasonal_data.get('average_temperature', 0)
+            date_used = seasonal_data.get('date_used', '')
             
-            try:
-                response = requests.get(
-                    f"{self.base_url}/api/weather/point",
-                    params=params,
-                    headers=headers,
-                    timeout=5
-                )
+            for point in seasonal_data.get('route_weather', []):
+                record = {
+                    'season': season,
+                    'date_used': date_used,
+                    'average_season_temp': avg_temp,
+                    'point_name': point.get('name'),
+                    'latitude': point.get('latitude'),
+                    'longitude': point.get('longitude'),
+                    'temperature': point.get('temperature'),
+                    'humidity': point.get('humidity'),
+                    'pressure': point.get('pressure'),
+                    'precipitation': point.get('precipitation'),
+                    'wind_speed': point.get('wind_speed_kmph'),
+                    'wind_direction': point.get('wind_direction'),
+                    'cloud_cover': point.get('cloud_cover'),
+                    'visibility': point.get('visibility_km'),
+                    'weather_condition': point.get('weather_condition'),
+                    'road_surface': point.get('road_surface_condition'),
+                    'risk_score': point.get('risk_score'),
+                    'driving_impact': point.get('driving_condition_impact')
+                }
+                records.append(record)
+        
+        return pd.DataFrame(records)
+    
+    def calculate_route_statistics(self, df: pd.DataFrame) -> Dict:
+        """Calculate statistical summaries for the route"""
+        if df.empty:
+            return {}
+        
+        stats = {}
+        
+        # Overall statistics
+        stats['overall'] = {
+            'avg_temperature': df['temperature'].mean(),
+            'avg_humidity': df['humidity'].mean(),
+            'avg_precipitation': df['precipitation'].mean(),
+            'avg_wind_speed': df['wind_speed'].mean(),
+            'avg_visibility': df['visibility'].mean()
+        }
+        
+        # Seasonal statistics
+        stats['seasonal'] = {}
+        for season in df['season'].unique():
+            season_df = df[df['season'] == season]
+            stats['seasonal'][season] = {
+                'avg_temperature': season_df['temperature'].mean(),
+                'avg_humidity': season_df['humidity'].mean(),
+                'avg_precipitation': season_df['precipitation'].mean(),
+                'avg_wind_speed': season_df['wind_speed'].mean(),
+                'max_precipitation': season_df['precipitation'].max(),
+                'min_visibility': season_df['visibility'].min(),
+                'weather_conditions': season_df['weather_condition'].value_counts().to_dict(),
+                'road_conditions': season_df['road_surface'].value_counts().to_dict()
+            }
+        
+        # Point-wise statistics
+        stats['points'] = {}
+        for point in df['point_name'].unique():
+            point_df = df[df['point_name'] == point]
+            stats['points'][point] = {
+                'avg_temperature': point_df['temperature'].mean(),
+                'temperature_range': (point_df['temperature'].min(), point_df['temperature'].max()),
+                'avg_humidity': point_df['humidity'].mean(),
+                'total_precipitation': point_df['precipitation'].sum()
+            }
+        
+        return stats
+    
+    def visualize_weather_patterns(self, df: pd.DataFrame, output_prefix: str = 'weather_analysis'):
+        """Create visualizations of weather patterns"""
+        if df.empty:
+            print("No data to visualize")
+            return
+        
+        # Set up the plotting style
+        plt.style.use('seaborn-v0_8-darkgrid')
+        
+        # 1. Temperature variation across seasons and points
+        plt.figure(figsize=(12, 6))
+        pivot_temp = df.pivot_table(values='temperature', index='point_name', columns='season')
+        pivot_temp.plot(kind='bar', ax=plt.gca())
+        plt.title('Temperature Variation Across Route Points by Season')
+        plt.xlabel('Route Points')
+        plt.ylabel('Temperature (°C)')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(f'{output_prefix}_temperature_variation.png')
+        plt.close()
+        
+        # 2. Precipitation patterns
+        plt.figure(figsize=(12, 6))
+        pivot_precip = df.pivot_table(values='precipitation', index='point_name', columns='season')
+        pivot_precip.plot(kind='bar', ax=plt.gca())
+        plt.title('Precipitation Patterns Across Route Points by Season')
+        plt.xlabel('Route Points')
+        plt.ylabel('Precipitation (mm)')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(f'{output_prefix}_precipitation_patterns.png')
+        plt.close()
+        
+        # 3. Weather conditions distribution
+        plt.figure(figsize=(10, 6))
+        weather_counts = df.groupby(['season', 'weather_condition']).size().unstack(fill_value=0)
+        weather_counts.plot(kind='bar', stacked=True, ax=plt.gca())
+        plt.title('Weather Conditions Distribution by Season')
+        plt.xlabel('Season')
+        plt.ylabel('Frequency')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(f'{output_prefix}_weather_conditions.png')
+        plt.close()
+        
+        # 4. Risk score analysis
+        plt.figure(figsize=(10, 6))
+        risk_data = df.groupby(['season', 'point_name'])['risk_score'].mean().unstack()
+        risk_data.plot(kind='line', marker='o', ax=plt.gca())
+        plt.title('Average Risk Score by Season and Location')
+        plt.xlabel('Season')
+        plt.ylabel('Risk Score')
+        plt.legend(title='Location', bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        plt.savefig(f'{output_prefix}_risk_analysis.png')
+        plt.close()
+    
+    def generate_report(self, df: pd.DataFrame, stats: Dict, output_file: str = 'weather_report.txt'):
+        """Generate a comprehensive weather analysis report"""
+        with open(output_file, 'w') as f:
+            f.write("ROUTE HISTORICAL WEATHER ANALYSIS REPORT\n")
+            f.write("=" * 50 + "\n\n")
+            
+            f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total Data Points: {len(df)}\n")
+            f.write(f"Seasons Analyzed: {', '.join(df['season'].unique())}\n\n")
+            
+            # Overall Statistics
+            f.write("OVERALL ROUTE STATISTICS\n")
+            f.write("-" * 30 + "\n")
+            for metric, value in stats.get('overall', {}).items():
+                f.write(f"{metric.replace('_', ' ').title()}: {value:.2f}\n")
+            
+            # Seasonal Analysis
+            f.write("\n\nSEASONAL ANALYSIS\n")
+            f.write("-" * 30 + "\n")
+            for season, season_stats in stats.get('seasonal', {}).items():
+                f.write(f"\n{season.upper()}:\n")
+                f.write(f"  Average Temperature: {season_stats['avg_temperature']:.1f}°C\n")
+                f.write(f"  Average Humidity: {season_stats['avg_humidity']:.1f}%\n")
+                f.write(f"  Average Precipitation: {season_stats['avg_precipitation']:.2f}mm\n")
+                f.write(f"  Maximum Precipitation: {season_stats['max_precipitation']:.2f}mm\n")
+                f.write(f"  Minimum Visibility: {season_stats['min_visibility']:.1f}km\n")
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    has_data = data.get('data_available', False)
-                    has_temp = 'temperature' in data and data['temperature'] is not None
-                    
-                    status = "✅ HAS DATA" if (has_data or has_temp) else "❌ NO DATA"
-                    print(f"  {point['name']}: {status}")
-                    
-                    if has_data or has_temp:
-                        working_coords.append({
-                            "latitude": point['lat'],
-                            "longitude": point['lon'],
-                            "name": point['name']
-                        })
-                        
-            except Exception as e:
-                print(f"  {point['name']}: ERROR - {e}")
-        
-        print(f"\nFound {len(working_coords)} locations with data")
-        return working_coords
-    
-    def test_raw_data_endpoint(self):
-        """Test if there's a raw data endpoint"""
-        print("\n" + "="*60)
-        print("TEST: Checking Raw Data Access")
-        print("="*60)
-        
-        # Try to get raw data from a known good coordinate
-        lat, lon = 28.6139, 77.2090  # Delhi
-        
-        endpoints_to_try = [
-            f"/api/weather/raw?lat={lat}&lon={lon}",
-            f"/api/weather/debug?lat={lat}&lon={lon}",
-            f"/api/weather/point?latitude={lat}&longitude={lon}&debug=true"
-        ]
-        
-        for endpoint in endpoints_to_try:
-            print(f"\nTrying: {self.base_url}{endpoint}")
-            try:
-                response = requests.get(
-                    f"{self.base_url}{endpoint}",
-                    headers={'X-API-Key': self.api_key},
-                    timeout=5
-                )
-                print(f"  Status: {response.status_code}")
-                if response.status_code == 200:
-                    print(f"  Response preview: {str(response.json())[:200]}...")
-            except Exception as e:
-                print(f"  Error: {e}")
-    
-    def run_diagnostic_tests(self):
-        """Run comprehensive diagnostic tests"""
-        print("\n" + "#"*60)
-        print("ERA5 WEATHER API DIAGNOSTIC TEST SUITE")
-        print(f"Server: {self.base_url}")
-        print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("#"*60)
-        
-        # 1. Check API info
-        info = self.test_info_endpoint()
-        
-        # 2. Test single point with different dates
-        if info and info.get('available_dates'):
-            # Test with first available date
-            first_date = info['available_dates'][0]
-            print(f"\nTesting with first available date: {first_date}")
-            self.test_single_point_detailed(28.6139, 77.2090, int(first_date))
-        
-        # 3. Find working coordinates
-        working_coords = self.find_working_coordinates()
-        
-        # 4. If we found working coordinates, test seasonal API with them
-        if working_coords:
-            print("\nTesting seasonal API with working coordinates...")
-            self.test_seasonal_with_fallback(working_coords[:3])  # Use first 3
-        
-        # 5. Test with original coordinates for comparison
-        print("\nTesting with original Mumbai-Delhi coordinates...")
-        self.test_seasonal_with_fallback(TEST_COORDINATES)
-        
-        # 6. Check for raw data endpoints
-        self.test_raw_data_endpoint()
-        
-        print("\n" + "#"*60)
-        print("DIAGNOSTIC COMPLETE")
-        print("#"*60)
-        print("\nRecommendations:")
-        print("1. Check if GRIB file contains data for Indian coordinates")
-        print("2. Verify date ranges in GRIB file match the API dates")
-        print("3. Consider using coordinates that returned data")
-        print("4. Check GRIB file metadata for coverage area")
-
+                f.write("  Weather Conditions:\n")
+                for condition, count in season_stats['weather_conditions'].items():
+                    f.write(f"    - {condition}: {count} occurrences\n")
+            
+            # Location Analysis
+            f.write("\n\nLOCATION-WISE ANALYSIS\n")
+            f.write("-" * 30 + "\n")
+            for point, point_stats in stats.get('points', {}).items():
+                f.write(f"\n{point}:\n")
+                f.write(f"  Average Temperature: {point_stats['avg_temperature']:.1f}°C\n")
+                f.write(f"  Temperature Range: {point_stats['temperature_range'][0]:.1f}°C - {point_stats['temperature_range'][1]:.1f}°C\n")
+                f.write(f"  Average Humidity: {point_stats['avg_humidity']:.1f}%\n")
+                f.write(f"  Total Precipitation: {point_stats['total_precipitation']:.2f}mm\n")
+            
+            # Risk Assessment
+            f.write("\n\nRISK ASSESSMENT\n")
+            f.write("-" * 30 + "\n")
+            high_risk = df[df['risk_score'] >= 7]
+            if not high_risk.empty:
+                f.write("High Risk Conditions Found:\n")
+                for _, row in high_risk.iterrows():
+                    f.write(f"  - {row['season']} at {row['point_name']}: Risk Score {row['risk_score']}\n")
+                    f.write(f"    Conditions: {row['weather_condition']}, Road: {row['road_surface']}\n")
+            else:
+                f.write("No high-risk conditions detected in the historical data.\n")
+            
+            # Recommendations
+            f.write("\n\nRECOMMENDATIONS\n")
+            f.write("-" * 30 + "\n")
+            
+            # Check for monsoon risks
+            monsoon_data = df[df['season'] == 'monsoon']
+            if not monsoon_data.empty and monsoon_data['precipitation'].mean() > 0.5:
+                f.write("- High precipitation during monsoon season - ensure proper drainage and road maintenance\n")
+            
+            # Check for visibility issues
+            low_vis = df[df['visibility'] < 5]
+            if not low_vis.empty:
+                f.write("- Low visibility conditions detected - install proper lighting and warning systems\n")
+            
+            # Check for extreme temperatures
+            if stats['overall']['avg_temperature'] > 35:
+                f.write("- High average temperatures - consider heat-resistant road materials\n")
+            elif stats['overall']['avg_temperature'] < 10:
+                f.write("- Low average temperatures - monitor for ice formation risks\n")
 
 def main():
-    """Main function"""
-    tester = EnhancedWeatherTester()
+    # Configuration
+    API_URL = "http://43.250.40.133:6000/api/weather/route/seasonal"
+    API_KEY = "h4DSeoxB88OwRw7rh42sWJlx8BphPHCi"
+    CSV_FILE = "route_coordinates.csv"  # Your CSV file name
     
-    if len(sys.argv) > 1 and sys.argv[1] == '--quick':
-        # Quick test with single point
-        tester.test_single_point_detailed(28.6139, 77.2090)
+    # Initialize analyzer
+    analyzer = RouteWeatherAnalyzer(API_URL, API_KEY)
+    
+    # Option 1: Load route from CSV
+    # route_points = analyzer.load_route_from_csv(CSV_FILE)
+    
+    # Option 2: Use the sample coordinates from your data
+    route_points = [
+        {"latitude": 25.6824, "longitude": 88.0713, "name": "Point A"},
+        {"latitude": 26.2175, "longitude": 88.1329, "name": "Point B"},
+        {"latitude": 21.3884, "longitude": 81.6700, "name": "Point C"}
+    ]
+    
+    print("Fetching seasonal weather data for route...")
+    raw_data = analyzer.fetch_seasonal_weather(route_points)
+    
+    if raw_data:
+        print("Parsing weather data...")
+        df = analyzer.parse_weather_data(raw_data)
+        
+        if not df.empty:
+            print(f"Successfully parsed {len(df)} weather records")
+            
+            # Calculate statistics
+            print("Calculating route statistics...")
+            stats = analyzer.calculate_route_statistics(df)
+            
+            # Generate visualizations
+            print("Creating visualizations...")
+            analyzer.visualize_weather_patterns(df)
+            
+            # Generate report
+            print("Generating analysis report...")
+            analyzer.generate_report(df, stats)
+            
+            # Save processed data
+            df.to_csv('route_weather_data.csv', index=False)
+            print("\nAnalysis complete! Check the following files:")
+            print("- route_weather_data.csv (processed data)")
+            print("- weather_report.txt (analysis report)")
+            print("- weather_analysis_*.png (visualizations)")
+        else:
+            print("No weather data could be parsed")
     else:
-        # Run full diagnostics
-        tester.run_diagnostic_tests()
-
+        print("Failed to fetch weather data from API")
 
 if __name__ == "__main__":
     main()

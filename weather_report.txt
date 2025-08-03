@@ -1,0 +1,80 @@
+ROUTE HISTORICAL WEATHER ANALYSIS REPORT
+==================================================
+
+Analysis Date: 2025-08-03 09:43:18
+Total Data Points: 9
+Seasons Analyzed: winter, summer, monsoon
+
+OVERALL ROUTE STATISTICS
+------------------------------
+Avg Temperature: 23.17
+Avg Humidity: 86.10
+Avg Precipitation: 0.21
+Avg Wind Speed: 9.89
+Avg Visibility: 10.00
+
+
+SEASONAL ANALYSIS
+------------------------------
+
+WINTER:
+  Average Temperature: 14.5°C
+  Average Humidity: 90.6%
+  Average Precipitation: 0.00mm
+  Maximum Precipitation: 0.00mm
+  Minimum Visibility: 10.0km
+  Weather Conditions:
+    - clear: 2 occurrences
+    - partly_cloudy: 1 occurrences
+
+SUMMER:
+  Average Temperature: 28.3°C
+  Average Humidity: 72.2%
+  Average Precipitation: 0.04mm
+  Maximum Precipitation: 0.10mm
+  Minimum Visibility: 10.0km
+  Weather Conditions:
+    - partly_cloudy: 2 occurrences
+    - cloudy: 1 occurrences
+
+MONSOON:
+  Average Temperature: 26.7°C
+  Average Humidity: 95.5%
+  Average Precipitation: 0.58mm
+  Maximum Precipitation: 1.19mm
+  Minimum Visibility: 10.0km
+  Weather Conditions:
+    - cloudy: 2 occurrences
+    - partly_cloudy: 1 occurrences
+
+
+LOCATION-WISE ANALYSIS
+------------------------------
+
+Point A:
+  Average Temperature: 22.0°C
+  Temperature Range: 12.7°C - 27.0°C
+  Average Humidity: 92.3%
+  Total Precipitation: 0.35mm
+
+Point B:
+  Average Temperature: 21.3°C
+  Temperature Range: 12.1°C - 26.0°C
+  Average Humidity: 93.7%
+  Total Precipitation: 1.29mm
+
+Point C:
+  Average Temperature: 26.2°C
+  Temperature Range: 18.8°C - 32.9°C
+  Average Humidity: 72.2%
+  Total Precipitation: 0.21mm
+
+
+RISK ASSESSMENT
+------------------------------
+No high-risk conditions detected in the historical data.
+
+
+RECOMMENDATIONS
+------------------------------
+- High precipitation during monsoon season - ensure proper drainage and road maintenance
