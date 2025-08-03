@@ -2,58 +2,47 @@
 """
 Google Maps Image Downloader for HPCL Sharp Turns and Blind Spots
 Downloads Street View and Satellite images for each critical point
-
-IMPORTANT: This is a COMPATIBLE REPLACEMENT that maintains the same interface
-but uses alternative APIs (Mapillary, Mapbox, Bing, OSM) instead of Google.
-NO CHANGES NEEDED in files that import and use this class!
+Enhanced with TileServer GL support for satellite and roadmap images
 """
 
 import os
 import requests
 import time
+import math
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any 
 import logging
 from PIL import Image
 import io
-import json
-import math
 
 logger = logging.getLogger(__name__)
 
 class GoogleMapsImageDownloader:
-    """
-    Downloads and manages Google Maps images for sharp turns and blind spots
+    """Downloads and manages Google Maps images for sharp turns and blind spots"""
     
-    COMPATIBILITY NOTE: This class maintains the exact same interface as the original
-    GoogleMapsImageDownloader but uses alternative APIs internally.
-    """
-    
-    def __init__(self, api_key: str, base_path: str = "./route_images"):
+    def __init__(self, api_key: str, base_path: str = "./route_images", 
+                 tileserver_url: str = "http://69.62.73.201:8080", 
+                 use_tileserver: bool = True):
         """
         Initialize the image downloader
         
         Args:
-            api_key: Google Maps API key (IGNORED - kept for compatibility)
+            api_key: Google Maps API key
             base_path: Base directory for storing images
+            tileserver_url: TileServer GL URL (default: "http://69.62.73.201:8080")
+            use_tileserver: Whether to use TileServer for satellite/roadmap images (default: True)
         """
-        # Note: api_key parameter is kept for compatibility but not used
-        self.api_key = api_key  # Kept for compatibility
+        self.api_key = api_key
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
         
-        # API endpoints - Using alternatives instead of Google
-        self.street_view_url = "https://graph.mapillary.com"  # Mapillary instead
-        self.static_map_url = "https://api.mapbox.com/styles/v1"  # Mapbox instead
+        # TileServer configuration
+        self.tileserver_url = tileserver_url.rstrip('/') if tileserver_url else None
+        self.use_tileserver = use_tileserver and tileserver_url is not None
         
-        # Alternative API keys
-        self.mapillary_token = os.getenv('MAPILLARY_ACCESS_TOKEN')
-        self.mapbox_token = os.getenv('MAPBOX_ACCESS_TOKEN')
-        self.bing_maps_key = os.getenv('BING_MAPS_KEY')
-        
-        # Additional endpoints
-        self.osm_tile_server = "https://tile.openstreetmap.org"
-        self.bing_static_api = "https://dev.virtualearth.net/REST/v1/Imagery/Map"
+        # API endpoints
+        self.street_view_url = "https://maps.googleapis.com/maps/api/streetview"
+        self.static_map_url = "https://maps.googleapis.com/maps/api/staticmap"
         
         # Rate limiting
         self.request_delay = 0.1  # 100ms between requests
@@ -66,6 +55,87 @@ class GoogleMapsImageDownloader:
         if time_since_last < self.request_delay:
             time.sleep(self.request_delay - time_since_last)
         self.last_request_time = time.time()
+    
+    def lat_lon_to_tile(self, lat: float, lon: float, zoom: int) -> Tuple[int, int]:
+        """Convert latitude/longitude to tile coordinates"""
+        lat_rad = math.radians(lat)
+        n = 2.0 ** zoom
+        x = int((lon + 180.0) / 360.0 * n)
+        y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+        return x, y
+    
+    def download_tiles_and_stitch(self, lat: float, lng: float, zoom: int, 
+                                  tile_type: str, size: Tuple[int, int] = (640, 480)) -> Optional[bytes]:
+        """
+        Download tiles from TileServer and stitch them together
+        
+        Args:
+            lat: Latitude
+            lng: Longitude
+            zoom: Zoom level
+            tile_type: 'india-satellite' or 'india'
+            size: Desired output size (width, height)
+            
+        Returns:
+            Stitched image as bytes or None
+        """
+        try:
+            # Calculate center tile
+            center_x, center_y = self.lat_lon_to_tile(lat, lng, zoom)
+            
+            # Calculate how many tiles we need (256px per tile)
+            tiles_x = math.ceil(size[0] / 256)
+            tiles_y = math.ceil(size[1] / 256)
+            
+            # Download tiles
+            tiles = {}
+            for dx in range(-(tiles_x//2), (tiles_x//2) + 1):
+                for dy in range(-(tiles_y//2), (tiles_y//2) + 1):
+                    tile_x = center_x + dx
+                    tile_y = center_y + dy
+                    
+                    url = f"{self.tileserver_url}/data/{tile_type}/{zoom}/{tile_x}/{tile_y}.png"
+                    
+                    self._rate_limit()
+                    response = requests.get(url, timeout=10)
+                    
+                    if response.status_code == 200:
+                        img = Image.open(io.BytesIO(response.content))
+                        tiles[(dx, dy)] = img
+                    else:
+                        logger.warning(f"Failed to download tile {tile_x},{tile_y}: {response.status_code}")
+            
+            if not tiles:
+                return None
+            
+            # Calculate canvas size
+            canvas_width = tiles_x * 256
+            canvas_height = tiles_y * 256
+            
+            # Create canvas and paste tiles
+            canvas = Image.new('RGB', (canvas_width, canvas_height))
+            
+            for (dx, dy), tile_img in tiles.items():
+                x = (dx + tiles_x//2) * 256
+                y = (dy + tiles_y//2) * 256
+                canvas.paste(tile_img, (x, y))
+            
+            # Crop to desired size from center
+            left = (canvas_width - size[0]) // 2
+            top = (canvas_height - size[1]) // 2
+            right = left + size[0]
+            bottom = top + size[1]
+            
+            cropped = canvas.crop((left, top, right, bottom))
+            
+            # Convert to bytes
+            output = io.BytesIO()
+            cropped.save(output, format='PNG')
+            return output.getvalue()
+            
+        except Exception as e:
+            logger.error(f"Error downloading and stitching tiles: {e}")
+            return None
     
     def get_route_image_folder(self, route_id: str) -> Path:
         """Get or create folder for route images"""
@@ -80,26 +150,29 @@ class GoogleMapsImageDownloader:
                              force_download: bool = False) -> Optional[str]:
         """
         Download street view image for a specific location
-        
-        COMPATIBILITY: Same signature as original, but uses Mapillary instead of Google
+        (Always uses Google Maps API)
         
         Args:
             lat: Latitude
             lng: Longitude
             route_id: Route identifier
             turn_id: Turn/spot identifier
-            heading: Camera heading (IGNORED - Mapillary doesn't support this)
-            fov: Field of view (IGNORED - for compatibility)
-            pitch: Up/down angle (IGNORED - for compatibility)
+            heading: Camera heading (0-360, 0=North, 90=East)
+            fov: Field of view (10-120)
+            pitch: Up/down angle (-90 to 90)
             force_download: Force re-download even if file exists
         
         Returns:
             Path to saved image or None if failed
         """
         try:
-            # Generate filename - SAME format as original for compatibility
+            # Calculate heading if not provided
+            if heading is None:
+                heading = 0
+            
+            # Generate filename
             route_folder = self.get_route_image_folder(route_id)
-            filename = f"streetview_{turn_id}_h{int(heading or 0)}.jpg"
+            filename = f"streetview_{turn_id}_h{int(heading)}.jpg"
             filepath = route_folder / filename
             
             # Check if image already exists
@@ -107,40 +180,31 @@ class GoogleMapsImageDownloader:
                 logger.info(f"✅ Street view already exists: {filepath}")
                 return str(filepath)
             
-            # Try Mapillary first
-            if self.mapillary_token:
-                self._rate_limit()
-                
-                # Search for images near location
-                search_url = f"{self.street_view_url}/images"
-                params = {
-                    'access_token': self.mapillary_token,
-                    'fields': 'id,geometry,thumb_2048_url,captured_at,compass_angle',
-                    'bbox': f'{lng-0.001},{lat-0.001},{lng+0.001},{lat+0.001}',
-                    'limit': 10
-                }
-                
-                response = requests.get(search_url, params=params, timeout=30)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('data') and len(data['data']) > 0:
-                        # Get the closest image
-                        closest_image = data['data'][0]
-                        image_url = closest_image.get('thumb_2048_url')
-                        
-                        if image_url:
-                            # Download the image
-                            img_response = requests.get(image_url, timeout=30)
-                            if img_response.status_code == 200:
-                                with open(filepath, 'wb') as f:
-                                    f.write(img_response.content)
-                                logger.info(f"✅ Street view saved: {filepath}")
-                                return str(filepath)
+            # Rate limit before making API call
+            self._rate_limit()
             
-            # If no street view available, create a placeholder or return None
-            logger.info(f"No street view available for turn {turn_id} at {lat},{lng}")
-            return None
+            params = {
+                'location': f'{lat},{lng}',
+                'size': '640x480',
+                'fov': fov,
+                'pitch': pitch,
+                'heading': heading,
+                'key': self.api_key
+            }
+            
+            logger.info(f"Downloading street view for turn {turn_id} at {lat},{lng}")
+            response = requests.get(self.street_view_url, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                # Save image
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+                
+                logger.info(f"✅ Street view saved: {filepath}")
+                return str(filepath)
+            else:
+                logger.error(f"Failed to download street view: {response.status_code}")
+                return None
                 
         except Exception as e:
             logger.error(f"Error downloading street view: {e}")
@@ -152,8 +216,7 @@ class GoogleMapsImageDownloader:
                            force_download: bool = False) -> Optional[str]:
         """
         Download satellite image for a specific location
-        
-        COMPATIBILITY: Same signature as original, but uses Mapbox/Bing instead of Google
+        Uses TileServer if configured, otherwise Google Maps
         
         Args:
             lat: Latitude
@@ -167,7 +230,7 @@ class GoogleMapsImageDownloader:
             Path to saved image or None if failed
         """
         try:
-            # Generate filename - SAME format as original for compatibility
+            # Generate filename
             route_folder = self.get_route_image_folder(route_id)
             filename = f"satellite_{turn_id}.png"
             filepath = route_folder / filename
@@ -177,46 +240,48 @@ class GoogleMapsImageDownloader:
                 logger.info(f"✅ Satellite view already exists: {filepath}")
                 return str(filepath)
             
+            # Rate limit before making API call
             self._rate_limit()
             
-            # Try Mapbox first
-            if self.mapbox_token:
-                style_id = "mapbox/satellite-v9"
-                url = f"{self.static_map_url}/{style_id}/static/{lng},{lat},{zoom},0/640x480@2x"
+            if self.use_tileserver:
+                # Use TileServer GL
+                logger.info(f"Downloading satellite view from TileServer for turn {turn_id}")
+                image_data = self.download_tiles_and_stitch(
+                    lat, lng, zoom, 'india-satellite', size=(640, 480)
+                )
                 
-                params = {
-                    'access_token': self.mapbox_token
-                }
-                
-                response = requests.get(url, params=params, timeout=30)
-                
-                if response.status_code == 200:
+                if image_data:
                     with open(filepath, 'wb') as f:
-                        f.write(response.content)
-                    logger.info(f"✅ Satellite view saved: {filepath}")
+                        f.write(image_data)
+                    logger.info(f"✅ Satellite view saved from TileServer: {filepath}")
                     return str(filepath)
+                else:
+                    logger.error("Failed to download from TileServer")
+                    # Fall back to Google Maps if TileServer fails
+                    
+            # Use Google Maps API (fallback or default)
+            params = {
+                'center': f'{lat},{lng}',
+                'zoom': zoom,
+                'size': '640x480',
+                'maptype': 'satellite',
+                'key': self.api_key,
+                'scale': 2  # Higher quality
+            }
             
-            # Fallback to Bing Maps
-            if self.bing_maps_key:
-                url = f"{self.bing_static_api}/Aerial/{zoom}"
-                params = {
-                    'centerPoint': f'{lat},{lng}',
-                    'mapSize': '640,480',
-                    'key': self.bing_maps_key,
-                    'format': 'jpeg'
-                }
-                
-                response = requests.get(url, params=params, timeout=30)
-                
-                if response.status_code == 200:
-                    # Save as PNG to match expected format
-                    img = Image.open(io.BytesIO(response.content))
-                    img.save(filepath, 'PNG')
-                    logger.info(f"✅ Satellite view saved: {filepath}")
-                    return str(filepath)
+            logger.info(f"Downloading satellite view from Google Maps for turn {turn_id}")
+            response = requests.get(self.static_map_url, params=params, timeout=30)
             
-            logger.error(f"Failed to download satellite view")
-            return None
+            if response.status_code == 200:
+                # Save image
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+                
+                logger.info(f"✅ Satellite view saved: {filepath}")
+                return str(filepath)
+            else:
+                logger.error(f"Failed to download satellite view: {response.status_code}")
+                return None
                 
         except Exception as e:
             logger.error(f"Error downloading satellite view: {e}")
@@ -229,8 +294,7 @@ class GoogleMapsImageDownloader:
                                     force_download: bool = False) -> Optional[str]:
         """
         Download roadmap with risk marker for a specific location
-        
-        COMPATIBILITY: Same signature as original, but uses Mapbox/OSM instead of Google
+        Uses TileServer if configured, otherwise Google Maps
         
         Args:
             lat: Latitude
@@ -245,7 +309,7 @@ class GoogleMapsImageDownloader:
             Path to saved image or None if failed
         """
         try:
-            # Generate filename - SAME format as original for compatibility
+            # Generate filename
             route_folder = self.get_route_image_folder(route_id)
             filename = f"roadmap_{turn_id}.png"
             filepath = route_folder / filename
@@ -255,76 +319,71 @@ class GoogleMapsImageDownloader:
                 logger.info(f"✅ Roadmap already exists: {filepath}")
                 return str(filepath)
             
+            # Rate limit before making API call
             self._rate_limit()
             
+            if self.use_tileserver:
+                # Use TileServer GL
+                logger.info(f"Downloading roadmap from TileServer for turn {turn_id}")
+                image_data = self.download_tiles_and_stitch(
+                    lat, lng, zoom, 'india', size=(640, 480)
+                )
+                
+                if image_data:
+                    # Add marker overlay on the image
+                    img = Image.open(io.BytesIO(image_data))
+                    
+                    # TODO: Add marker drawing logic here if needed
+                    # For now, just save the base map
+                    
+                    with open(filepath, 'wb') as f:
+                        img.save(f, 'PNG')
+                    logger.info(f"✅ Roadmap saved from TileServer: {filepath}")
+                    return str(filepath)
+                else:
+                    logger.error("Failed to download from TileServer")
+                    # Fall back to Google Maps if TileServer fails
+            
+            # Use Google Maps API (fallback or default)
             # Determine marker color based on risk
             marker_colors = {
-                'critical': 'f00',
-                'high': 'f90', 
-                'medium': 'ff0',
-                'low': '0f0'
+                'critical': 'red',
+                'high': 'orange', 
+                'medium': 'yellow',
+                'low': 'green'
             }
-            color = marker_colors.get(risk_level.lower(), 'f00')
+            color = marker_colors.get(risk_level.lower(), 'red')
             
-            # Try Mapbox first
-            if self.mapbox_token:
-                marker = f"pin-l-danger+{color}({lng},{lat})"
-                style_id = "mapbox/streets-v11"
-                url = f"{self.static_map_url}/{style_id}/static/{marker}/{lng},{lat},{zoom},0/640x480@2x"
-                
-                params = {
-                    'access_token': self.mapbox_token
-                }
-                
-                response = requests.get(url, params=params, timeout=30)
-                
-                if response.status_code == 200:
-                    with open(filepath, 'wb') as f:
-                        f.write(response.content)
-                    logger.info(f"✅ Roadmap saved: {filepath}")
-                    return str(filepath)
+            params = {
+                'center': f'{lat},{lng}',
+                'zoom': zoom,
+                'size': '640x480',
+                'maptype': 'roadmap',
+                'markers': f'color:{color}|size:large|{lat},{lng}',
+                'key': self.api_key,
+                'scale': 2
+            }
             
-            # Fallback to OSM
-            return self._download_osm_fallback(lat, lng, route_folder, filename, zoom)
+            logger.info(f"Downloading roadmap from Google Maps for turn {turn_id}")
+            response = requests.get(self.static_map_url, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+                
+                logger.info(f"✅ Roadmap saved: {filepath}")
+                return str(filepath)
+            else:
+                logger.error(f"Failed to download roadmap: {response.status_code}")
+                return None
                 
         except Exception as e:
             logger.error(f"Error downloading roadmap: {e}")
             return None
     
-    def _download_osm_fallback(self, lat: float, lng: float, route_folder: Path, 
-                              filename: str, zoom: int) -> Optional[str]:
-        """Internal method to download OSM tile as fallback"""
-        try:
-            filepath = route_folder / filename
-            
-            # Convert lat/lon to tile numbers
-            n = 2.0 ** zoom
-            x = int((lng + 180.0) / 360.0 * n)
-            y = int((1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n)
-            
-            # Download the tile
-            tile_url = f"{self.osm_tile_server}/{zoom}/{x}/{y}.png"
-            headers = {
-                'User-Agent': 'HPCL-Journey-Risk-Management/1.0'
-            }
-            
-            response = requests.get(tile_url, headers=headers, timeout=30)
-            
-            if response.status_code == 200:
-                with open(filepath, 'wb') as f:
-                    f.write(response.content)
-                logger.info(f"✅ OSM fallback saved: {filepath}")
-                return str(filepath)
-                
-        except Exception as e:
-            logger.error(f"Error downloading OSM fallback: {e}")
-            return None
-    
     def get_image_status(self, route_id: str, turn_id: str) -> Dict[str, bool]:
         """
         Check which images already exist for a turn/spot
-        
-        COMPATIBILITY: Same return format as original
         
         Returns dict with status of each image type
         """
@@ -351,8 +410,6 @@ class GoogleMapsImageDownloader:
                             force_download: bool = False) -> Dict[str, str]:
         """
         Download all images for a sharp turn
-        
-        COMPATIBILITY: Exact same signature and return format as original
         
         Args:
             turn_data: Dictionary with turn information
@@ -421,8 +478,6 @@ class GoogleMapsImageDownloader:
         """
         Download all images for a blind spot
         
-        COMPATIBILITY: Exact same signature and return format as original
-        
         Args:
             spot_data: Dictionary with blind spot information
             route_id: Route identifier
@@ -453,17 +508,10 @@ class GoogleMapsImageDownloader:
         
         images = {}
         
-        # Download multiple street view angles for blind spots
-        # Note: With Mapillary, we can't control angles, so we try nearby points
+        # Download multiple street view angles for blind spots (with caching)
         for heading in [0, 90, 180, 270]:  # Four directions
-            # Slight offset for each direction to get different viewpoints
-            offset = 0.00005  # ~5 meters
-            lat_offset = offset * math.cos(math.radians(heading))
-            lng_offset = offset * math.sin(math.radians(heading))
-            
             street_view_path = self.download_street_view_image(
-                lat + lat_offset, lng + lng_offset, route_id, f"blind_{spot_id}", 
-                heading=heading, force_download=force_download
+                lat, lng, route_id, f"blind_{spot_id}", heading=heading, force_download=force_download
             )
             if street_view_path:
                 images[f'street_view_{heading}'] = street_view_path
@@ -481,8 +529,6 @@ class GoogleMapsImageDownloader:
                              layout: str = 'horizontal') -> Optional[str]:
         """
         Create a composite image from multiple images
-        
-        COMPATIBILITY: Exact same signature as original
         
         Args:
             images: List of image paths
@@ -538,7 +584,7 @@ class GoogleMapsImageDownloader:
             return None
     
     def cleanup_old_images(self, route_id: str, days_old: int = 30):
-        """Clean up old images for a route - COMPATIBILITY METHOD"""
+        """Clean up old images for a route"""
         import datetime
         
         route_folder = self.get_route_image_folder(route_id)
@@ -550,9 +596,10 @@ class GoogleMapsImageDownloader:
                     file_path.unlink()
                     logger.info(f"Deleted old image: {file_path}")
     
+    # Additional helper method to clear cache for specific route
     def clear_route_cache(self, route_id: str):
         """
-        Clear all cached images for a specific route - COMPATIBILITY METHOD
+        Clear all cached images for a specific route
         """
         route_folder = self.get_route_image_folder(route_id)
         if route_folder.exists():
@@ -561,9 +608,10 @@ class GoogleMapsImageDownloader:
             logger.info(f"Cleared image cache for route {route_id}")
             route_folder.mkdir(parents=True, exist_ok=True)
 
+    # Method to get cache statistics
     def get_cache_stats(self, route_id: str) -> Dict[str, Any]:
         """
-        Get statistics about cached images for a route - COMPATIBILITY METHOD
+        Get statistics about cached images for a route
         """
         route_folder = self.get_route_image_folder(route_id)
         
@@ -601,37 +649,23 @@ class GoogleMapsImageDownloader:
             'folder_path': str(route_folder)
         }
 
-
-# ============================================================================
-# BACKWARD COMPATIBILITY - These ensure the class works exactly like the original
-# ============================================================================
-
+# Example usage:
 if __name__ == "__main__":
-    # This example shows that the interface is EXACTLY the same as the original
-    
-    # Initialize with "Google API key" (actually ignored, but interface is same)
+    # Initialize with TileServer support
     downloader = GoogleMapsImageDownloader(
-        api_key="your_google_api_key_here",  # This is ignored internally
-        base_path="./route_images"
+        api_key="YOUR_GOOGLE_API_KEY",
+        tileserver_url="http://69.62.73.201:8080",
+        use_tileserver=True  # Enable TileServer for satellite/roadmap
     )
     
-    # Example turn data - EXACTLY as used with original class
+    # Download images for a turn
     turn_data = {
         '_id': '12345',
-        'latitude': 28.6139,
-        'longitude': 77.2090,
+        'latitude': 19.0760,
+        'longitude': 72.8777,
         'riskScore': 8,
         'turnAngle': 95
     }
     
-    # Download images - EXACTLY same method call as original
     images = downloader.download_turn_images(turn_data, 'test_route')
     print(f"Downloaded images: {images}")
-    
-    # Check status - EXACTLY same method call as original
-    status = downloader.get_image_status('test_route', '12345')
-    print(f"Image status: {status}")
-    
-    # Get cache stats - EXACTLY same method call as original
-    stats = downloader.get_cache_stats('test_route')
-    print(f"Cache stats: {stats}")
