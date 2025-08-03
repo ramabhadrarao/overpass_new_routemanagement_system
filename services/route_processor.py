@@ -507,53 +507,402 @@ class RouteProcessor:
             
         return {'network_coverage': network_coverage}
     
+    # Complete weather-related methods update for route_processor.py
+    # Replace all weather-related methods with these
+
     def _get_weather_data_fast(self, route_id: str, coordinates: List[Dict]) -> Dict:
-        """Get weather data using ERA5 API with batching"""
+        """Get weather data using seasonal API with fallback to single-point API"""
         logger.debug(f"Getting weather data for route {route_id}")
         weather_conditions = []
         
         try:
-            # Get weather for start, middle and end points only
-            sample_points = [
-                (0, coordinates[0]),
-                (len(coordinates) // 2, coordinates[len(coordinates) // 2]),
-                (len(coordinates) - 1, coordinates[-1])
-            ]
-            logger.debug(f"Getting weather for {len(sample_points)} sample points")
+            # Sample points along the route
+            total_points = len(coordinates)
+            if total_points <= 3:
+                sample_indices = list(range(total_points))
+            else:
+                # Sample up to 5 points: start, 1/4, middle, 3/4, end
+                sample_indices = [
+                    0,
+                    total_points // 4,
+                    total_points // 2,
+                    3 * total_points // 4,
+                    total_points - 1
+                ]
             
-            for idx, (coord_idx, point) in enumerate(sample_points):
-                logger.debug(f"Processing weather point {idx+1}/{len(sample_points)}")
+            logger.info(f"Sampling {len(sample_indices)} points for weather data")
+            
+            # Try seasonal API first
+            seasonal_success = False
+            try:
+                # Prepare coordinates for seasonal API
+                api_coordinates = []
+                for idx in sample_indices:
+                    point = coordinates[idx]
+                    api_coordinates.append({
+                        "latitude": point['latitude'],
+                        "longitude": point['longitude'],
+                        "name": f"Point_{idx}"
+                    })
                 
                 # Check cache
-                cached = self._get_cached_data('weather', point['latitude'], point['longitude'])
+                cache_key = f"seasonal_weather_{coordinates[0]['latitude']}_{coordinates[0]['longitude']}"
+                cached_data = self._get_cached_data('seasonal_weather', coordinates[0]['latitude'], coordinates[0]['longitude'])
                 
-                if cached:
-                    weather = cached
-                    weather['distance_from_start_km'] = self._calculate_cumulative_distance(coordinates, coord_idx)
-                    logger.info(f"Using CACHED weather data for point {idx+1}")
+                if cached_data:
+                    logger.info("Using CACHED seasonal weather data")
+                    seasonal_data = cached_data
                 else:
-                    # Use ERA5 API
-                    logger.info(f"Calling ERA5 API for weather point {idx+1}")
+                    logger.info(f"Calling ERA5 seasonal API for {len(api_coordinates)} points")
                     self._rate_limit_api('era5')
-                    weather = self._get_era5_weather(point, coordinates, coord_idx, route_id)
+                    seasonal_data = self._get_era5_seasonal_weather(api_coordinates, route_id)
+                    
+                    if seasonal_data:
+                        self._save_to_cache('seasonal_weather', coordinates[0]['latitude'], 
+                                        coordinates[0]['longitude'], seasonal_data)
+                
+                if seasonal_data:
+                    # Process seasonal data
+                    weather_conditions = self._process_seasonal_weather_data(
+                        seasonal_data, sample_indices, coordinates, route_id
+                    )
+                    seasonal_success = True
+                    logger.info(f"Successfully processed {len(weather_conditions)} weather conditions from seasonal API")
+                
+            except Exception as e:
+                logger.error(f"Seasonal API failed: {e}")
+                seasonal_success = False
+            
+            # Fallback to single-point API if seasonal failed
+            if not seasonal_success:
+                logger.warning("Falling back to single-point weather API")
+                
+                for i, idx in enumerate(sample_indices[:3]):  # Limit to 3 points for single-point API
+                    point = coordinates[idx]
+                    logger.debug(f"Getting weather for point {i+1}/3")
+                    
+                    # Check cache
+                    cached = self._get_cached_data('weather', point['latitude'], point['longitude'])
+                    
+                    if cached:
+                        weather = cached
+                        weather['distance_from_start_km'] = self._calculate_cumulative_distance(coordinates, idx)
+                        logger.debug(f"Using cached weather for point {i+1}")
+                    else:
+                        # Call single-point API
+                        self._rate_limit_api('era5')
+                        weather = self._get_era5_weather(point, coordinates, idx, route_id)
+                        
+                        if weather:
+                            self._save_to_cache('weather', point['latitude'], point['longitude'], weather)
                     
                     if weather:
-                        self._save_to_cache('weather', point['latitude'], point['longitude'], weather)
-                        logger.info(f"Successfully fetched weather data from ERA5")
-                    else:
-                        logger.warning(f"Failed to get weather data for point {idx+1}")
-                
-                if weather:
-                    self.weather_condition_model.create_weather_condition(route_id, weather)
-                    weather_conditions.append(weather)
+                        self.weather_condition_model.create_weather_condition(route_id, weather)
+                        weather_conditions.append(weather)
             
-            logger.debug(f"Weather data complete: {len(weather_conditions)} points")
+            logger.info(f"Weather data collection complete: {len(weather_conditions)} conditions")
             
         except Exception as e:
             logger.error(f"Error getting weather data: {e}")
             logger.error(traceback.format_exc())
-            
+        
         return {'weather_conditions': weather_conditions}
+
+    def _get_era5_seasonal_weather(self, coordinates: List[Dict], route_id: str) -> Optional[List[Dict]]:
+        """Get seasonal weather from ERA5 API"""
+        try:
+            url = "http://43.250.40.133:6000/api/weather/route/seasonal"
+            
+            payload = {
+                "coordinates": coordinates
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': self.era5_api_key
+            }
+            
+            logger.debug(f"ERA5 seasonal API request to {url}")
+            logger.debug(f"Request payload: {json.dumps(payload, indent=2)}")
+            
+            start_time = time.time()
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            response_time = (time.time() - start_time) * 1000
+            
+            logger.info(f"ERA5 seasonal API response: {response.status_code} in {response_time:.0f}ms")
+            
+            # Log API call
+            self.api_log_model.log_api_call(
+                route_id=route_id,
+                api_name='era5_seasonal_weather',
+                endpoint=url,
+                request_data={'coordinates_count': len(coordinates)},
+                response_data={'status_code': response.status_code, 'response_time_ms': response_time},
+                status_code=response.status_code,
+                response_time=response_time
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.debug(f"Seasonal API response structure: {type(data)}")
+                
+                # Handle different response formats
+                if isinstance(data, list) and len(data) > 0:
+                    # Check if response has route_weather structure
+                    if isinstance(data[0], dict) and 'route_weather' in data[0]:
+                        logger.debug(f"Found route_weather in response with {len(data[0]['route_weather'])} points")
+                        return data[0]['route_weather']
+                    else:
+                        # Direct weather data array
+                        logger.debug(f"Direct weather data array with {len(data)} points")
+                        return data
+                else:
+                    logger.warning("Empty or invalid response from seasonal API")
+                    return None
+            else:
+                logger.error(f"ERA5 seasonal API error: {response.status_code} - {response.text[:200]}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.error("ERA5 seasonal API timeout after 30 seconds")
+            self.api_log_model.log_api_call(
+                route_id=route_id,
+                api_name='era5_seasonal_weather',
+                endpoint=url,
+                request_data={'coordinates_count': len(coordinates)},
+                response_data=None,
+                status_code=0,
+                response_time=30000,
+                error='Timeout'
+            )
+            return None
+        except Exception as e:
+            logger.error(f"Error calling ERA5 seasonal API: {e}")
+            logger.error(traceback.format_exc())
+            return None
+
+    def _process_seasonal_weather_data(self, seasonal_data: List[Dict], sample_indices: List[int], 
+                                    coordinates: List[Dict], route_id: str) -> List[Dict]:
+        """Process seasonal weather data and store for each season"""
+        weather_conditions = []
+        total_distance = self._calculate_total_distance(coordinates)
+        
+        # Get current season
+        current_month = datetime.now().month
+        if 4 <= current_month <= 6:
+            current_season = 'summer'
+        elif 7 <= current_month <= 9:
+            current_season = 'monsoon'
+        elif 10 <= current_month <= 11:
+            current_season = 'autumn'
+        else:
+            current_season = 'winter'
+        
+        # Process each point from seasonal data
+        for point_idx, sample_idx in enumerate(sample_indices):
+            # Find matching weather data
+            point_weather = None
+            for weather_point in seasonal_data:
+                if weather_point.get('point_index') == point_idx:
+                    point_weather = weather_point
+                    break
+            
+            if not point_weather:
+                logger.warning(f"No weather data found for point index {point_idx}")
+                continue
+            
+            cumulative_distance = self._calculate_cumulative_distance(coordinates, sample_idx)
+            
+            # Create weather condition with proper field names for PDF compatibility
+            weather_condition = {
+                'latitude': coordinates[sample_idx]['latitude'],
+                'longitude': coordinates[sample_idx]['longitude'],
+                'distance_from_start_km': cumulative_distance,
+                'distance_from_end_km': total_distance - cumulative_distance,
+                
+                # Use the season from API response or current season
+                'season': point_weather.get('season', current_season),
+                
+                # Map API fields to expected field names (for PDF compatibility)
+                'weatherCondition': point_weather.get('weather_condition', 'clear'),
+                'averageTemperature': point_weather.get('temperature', 25),
+                'humidity': point_weather.get('humidity', 60),
+                'pressure': point_weather.get('pressure', 1013),
+                'visibilityKm': point_weather.get('visibility_km', 10),
+                'windSpeedKmph': point_weather.get('wind_speed_kmph', 10),
+                'windDirection': point_weather.get('wind_direction', 'N'),
+                'precipitationMm': point_weather.get('precipitation', 0),
+                'roadSurfaceCondition': point_weather.get('road_surface_condition', 'dry'),
+                'riskScore': point_weather.get('risk_score', 3),
+                'monsoonRisk': 8 if point_weather.get('season') == 'monsoon' else 3,
+                'drivingConditionImpact': point_weather.get('driving_condition_impact', 'minimal'),
+                
+                # Additional fields from seasonal data
+                'cloudCover': point_weather.get('cloud_cover', 50),
+                'dewpoint': point_weather.get('dewpoint', 15),
+                'uvIndex': 5,
+                'extremeWeatherHistory': [],
+                'recommendedPrecautions': self._get_weather_precautions(point_weather.get('season', current_season)),
+                
+                # Metadata
+                'dataSource': 'ERA5_SEASONAL',
+                'dataYear': datetime.now().year,
+                'forecastAccuracy': 85,
+                'dataAvailable': point_weather.get('data_available', True)
+            }
+            
+            # Store in database
+            self.weather_condition_model.create_weather_condition(route_id, weather_condition)
+            weather_conditions.append(weather_condition)
+            
+            # Optionally store data for all seasons
+            store_all_seasons = os.getenv('STORE_ALL_SEASON_WEATHER', 'false').lower() == 'true'
+            if store_all_seasons:
+                self._store_other_seasons(route_id, weather_condition, point_weather)
+        
+        return weather_conditions
+
+    # def _get_era5_weather(self, point: Dict, coordinates: List[Dict], index: int, route_id: str) -> Optional[Dict]:
+    #     """Get weather from single-point ERA5 API (fallback method)"""
+    #     try:
+    #         params = {
+    #             'latitude': point['latitude'],
+    #             'longitude': point['longitude']
+    #         }
+            
+    #         headers = {
+    #             'X-API-Key': self.era5_api_key
+    #         }
+            
+    #         logger.debug(f"ERA5 single-point API request: {self.era5_api_url}")
+    #         start_time = time.time()
+    #         response = requests.get(self.era5_api_url, params=params, headers=headers, timeout=10)
+    #         response_time = (time.time() - start_time) * 1000
+            
+    #         logger.debug(f"ERA5 API response: {response.status_code} in {response_time:.0f}ms")
+            
+    #         # Log API call
+    #         self.api_log_model.log_api_call(
+    #             route_id=route_id,
+    #             api_name='era5_weather',
+    #             endpoint=self.era5_api_url,
+    #             request_data=params,
+    #             response_data={'status_code': response.status_code},
+    #             status_code=response.status_code,
+    #             response_time=response_time
+    #         )
+            
+    #         if response.status_code == 200:
+    #             data = response.json()
+                
+    #             if data.get('data_available'):
+    #                 # Return with field names compatible with PDF generator
+    #                 return {
+    #                     'latitude': point['latitude'],
+    #                     'longitude': point['longitude'],
+    #                     'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
+    #                     'distance_from_end_km': self._calculate_total_distance(coordinates) - self._calculate_cumulative_distance(coordinates, index),
+    #                     'season': data.get('season', 'spring'),
+    #                     'weatherCondition': data.get('weather_condition', 'clear'),
+    #                     'averageTemperature': data.get('temperature', 25),
+    #                     'humidity': data.get('humidity', 60),
+    #                     'pressure': data.get('pressure', 1013),
+    #                     'visibilityKm': data.get('visibility_km', 10),
+    #                     'windSpeedKmph': data.get('wind_speed_kmph', 10),
+    #                     'windDirection': data.get('wind_direction', 'N'),
+    #                     'precipitationMm': data.get('precipitation', 0),
+    #                     'roadSurfaceCondition': data.get('road_surface_condition', 'dry'),
+    #                     'riskScore': data.get('risk_score', 3),
+    #                     'monsoonRisk': 8 if data.get('season') == 'monsoon' else 3,
+    #                     'drivingConditionImpact': data.get('driving_condition_impact', 'minimal'),
+    #                     'recommendedPrecautions': self._get_weather_precautions(data.get('season', 'spring')),
+    #                     'dataSource': 'ERA5_SINGLE_POINT',
+    #                     'dataAvailable': True
+    #                 }
+    #             else:
+    #                 logger.warning(f"No weather data available for location")
+    #                 return None
+    #         else:
+    #             logger.error(f"ERA5 API error: {response.status_code}")
+    #             return None
+                
+    #     except Exception as e:
+    #         logger.error(f"Error fetching ERA5 weather: {e}")
+    #         return None
+
+    def _get_weather_precautions(self, season: str) -> List[str]:
+        """Get recommended precautions based on season"""
+        precautions_map = {
+            'summer': [
+                'Carry extra water',
+                'Check coolant levels',
+                'Use sun protection',
+                'Avoid peak afternoon hours'
+            ],
+            'monsoon': [
+                'Reduce speed significantly',
+                'Maintain safe following distance',
+                'Check wipers and tires',
+                'Avoid waterlogged areas',
+                'Use fog lights in heavy rain'
+            ],
+            'autumn': [
+                'Watch for changing weather patterns',
+                'Be prepared for occasional rain'
+            ],
+            'winter': [
+                'Watch for morning fog',
+                'Use fog lights when needed',
+                'Drive slowly in low visibility'
+            ],
+            'spring': [
+                'Standard safety precautions',
+                'Check for seasonal weather changes'
+            ]
+        }
+        return precautions_map.get(season, ['Standard safety precautions'])
+
+    def _store_other_seasons(self, route_id: str, base_weather: Dict, api_data: Dict):
+        """Store weather data for other seasons (optional)"""
+        seasons = ['summer', 'monsoon', 'autumn', 'winter']
+        current_season = base_weather['season']
+        
+        for season in seasons:
+            if season != current_season:
+                seasonal_weather = base_weather.copy()
+                seasonal_weather['season'] = season
+                
+                # Adjust values based on season
+                if season == 'summer':
+                    seasonal_weather['averageTemperature'] = base_weather['averageTemperature'] + 8
+                    seasonal_weather['humidity'] = max(30, base_weather['humidity'] - 20)
+                    seasonal_weather['precipitationMm'] = 5
+                    seasonal_weather['weatherCondition'] = 'hot_and_dry'
+                    seasonal_weather['riskScore'] = 5
+                elif season == 'monsoon':
+                    seasonal_weather['averageTemperature'] = base_weather['averageTemperature'] - 3
+                    seasonal_weather['humidity'] = min(95, base_weather['humidity'] + 25)
+                    seasonal_weather['precipitationMm'] = 150
+                    seasonal_weather['weatherCondition'] = 'rainy'
+                    seasonal_weather['riskScore'] = 8
+                    seasonal_weather['roadSurfaceCondition'] = 'wet'
+                elif season == 'autumn':
+                    seasonal_weather['precipitationMm'] = 20
+                    seasonal_weather['weatherCondition'] = 'clear'
+                    seasonal_weather['riskScore'] = 3
+                elif season == 'winter':
+                    seasonal_weather['averageTemperature'] = base_weather['averageTemperature'] - 5
+                    seasonal_weather['humidity'] = base_weather['humidity'] - 10
+                    seasonal_weather['precipitationMm'] = 0
+                    seasonal_weather['weatherCondition'] = 'cloudy'
+                    seasonal_weather['visibilityKm'] = 6
+                    seasonal_weather['riskScore'] = 4
+                
+                seasonal_weather['monsoonRisk'] = 9 if season == 'monsoon' else 3
+                seasonal_weather['recommendedPrecautions'] = self._get_weather_precautions(season)
+                
+                # Store seasonal variant
+                self.weather_condition_model.create_weather_condition(route_id, seasonal_weather)
     
     def _get_era5_weather(self, point: Dict, coordinates: List[Dict], index: int, route_id: str) -> Optional[Dict]:
         """Get weather from ERA5 API"""
