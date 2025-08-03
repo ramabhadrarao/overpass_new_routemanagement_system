@@ -1,11 +1,20 @@
+# services/overpass_service.py
+# Enhanced debug version with comprehensive logging
+# Path: /services/overpass_service.py
+
 import requests
 import time
 from typing import List, Dict, Tuple
 import math
 from models.api_log import APILog
+import logging
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class OverpassService:
     def __init__(self, overpass_url, db):
+        logger.info(f"Initializing OverpassService with URL: {overpass_url}")
         self.overpass_url = overpass_url
         self.api_log = APILog(db)
         
@@ -14,6 +23,9 @@ class OverpassService:
         start_time = time.time()
         
         try:
+            logger.info(f"Overpass API request starting...")
+            logger.debug(f"Query: {query[:200]}...")  # First 200 chars of query
+            
             response = requests.post(
                 self.overpass_url,
                 data={'data': query},
@@ -22,6 +34,9 @@ class OverpassService:
             )
             
             response_time = (time.time() - start_time) * 1000  # Convert to ms
+            
+            logger.info(f"Overpass API response: {response.status_code} in {response_time:.0f}ms")
+            logger.debug(f"Response size: {len(response.content)} bytes")
             
             # Log API call
             self.api_log.log_api_call(
@@ -39,6 +54,8 @@ class OverpassService:
         except Exception as e:
             response_time = (time.time() - start_time) * 1000
             
+            logger.error(f"Overpass API error: {e}")
+            
             # Log error
             self.api_log.log_api_call(
                 route_id=route_id,
@@ -55,6 +72,8 @@ class OverpassService:
     
     def get_emergency_services(self, route_id: str, bounds: Dict) -> List[Dict]:
         """Get emergency services along the route"""
+        logger.info(f"Getting emergency services for bounds: {bounds}")
+        
         query = f"""
         [out:json][timeout:30];
         (
@@ -75,7 +94,10 @@ class OverpassService:
         data = self.query_overpass(query, route_id)
         services = []
         
-        for element in data.get('elements', []):
+        elements = data.get('elements', [])
+        logger.info(f"Overpass returned {len(elements)} emergency service elements")
+        
+        for element in elements:
             lat = element.get('lat') or element.get('center', {}).get('lat')
             lon = element.get('lon') or element.get('center', {}).get('lon')
             
@@ -92,18 +114,22 @@ class OverpassService:
                     'website': element.get('tags', {}).get('website', '')
                 }
                 services.append(service)
-                
+        
+        logger.info(f"Processed {len(services)} emergency services")
         return services
     
     def get_road_conditions(self, route_id: str, route_points: List[Dict]) -> List[Dict]:
         """Get road conditions along the route"""
+        logger.info(f"Getting road conditions for {len(route_points)} route points")
         conditions = []
         
         # Sample every 10th point to avoid too many queries
         sample_interval = max(1, len(route_points) // 20)
+        sample_points = route_points[::sample_interval]
+        logger.debug(f"Sampling {len(sample_points)} points for road conditions")
         
-        for i in range(0, len(route_points), sample_interval):
-            point = route_points[i]
+        for i, point in enumerate(sample_points):
+            logger.debug(f"Querying road condition for point {i+1}/{len(sample_points)}")
             
             # Query for road information around this point
             query = f"""
@@ -135,13 +161,16 @@ class OverpassService:
                     conditions.append(condition)
                     
             except Exception as e:
-                print(f"Error getting road condition: {e}")
+                logger.error(f"Error getting road condition for point {i+1}: {e}")
                 continue
-                
+        
+        logger.info(f"Processed {len(conditions)} road conditions")
         return conditions
     
     def get_eco_sensitive_zones(self, route_id: str, bounds: Dict) -> List[Dict]:
         """Get eco-sensitive zones along the route"""
+        logger.info(f"Getting eco-sensitive zones for bounds: {bounds}")
+        
         query = f"""
         [out:json][timeout:30];
         (
@@ -157,7 +186,10 @@ class OverpassService:
         data = self.query_overpass(query, route_id)
         zones = []
         
-        for element in data.get('elements', []):
+        elements = data.get('elements', [])
+        logger.info(f"Overpass returned {len(elements)} eco-zone elements")
+        
+        for element in elements:
             center = element.get('center', {})
             if center.get('lat') and center.get('lon'):
                 zone = {
@@ -172,7 +204,8 @@ class OverpassService:
                     'risk_score': 7 if element.get('tags', {}).get('boundary') == 'national_park' else 5
                 }
                 zones.append(zone)
-                
+        
+        logger.info(f"Processed {len(zones)} eco-sensitive zones")
         return zones
     
     def _assess_surface_quality(self, tags: Dict) -> str:

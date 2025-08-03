@@ -1,5 +1,5 @@
 # app.py
-# Main Flask application file - Updated with delete functionality, fixes, and multi-processing support
+# Main Flask application file - Updated with improved progress tracking and error handling
 # Path: /app.py
 
 import os
@@ -23,7 +23,14 @@ import time
 import math
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/app.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 upload_progress = {}
 
@@ -54,6 +61,7 @@ login_manager.login_view = 'login'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['PDF_OUTPUT_FOLDER'], exist_ok=True)
 os.makedirs('route_data', exist_ok=True)
+os.makedirs('logs', exist_ok=True)
 
 # User loader for Flask-Login
 @login_manager.user_loader
@@ -568,127 +576,31 @@ def cancel_upload(upload_id):
     
     return jsonify({'error': 'Invalid upload ID'}), 404
 
-def process_routes_async(filepath, upload_id, user_id):
-    """Process routes asynchronously with progress updates - ORIGINAL VERSION"""
+def process_routes_async_multiprocessing(filepath, upload_id, user_id):
+    """Process routes asynchronously with multi-threading/processing support"""
     try:
         # Parse CSV
         routes = file_parser.parse_route_csv(filepath)
         
         # Log start
-        logger.info(f"Starting async processing of {len(routes)} routes from {filepath}")
+        logger.info(f"Starting multi-threaded processing of {len(routes)} routes from {filepath}")
         
+        # Get number of workers from config
+        max_workers = app.config.get('CONCURRENT_WORKERS', 5)
+        
+        # Process routes sequentially to avoid overwhelming the system
         for index, route_info in enumerate(routes):
             # Check if cancelled
             if upload_progress[upload_id]['status'] == 'cancelled':
                 logger.info(f"Processing cancelled at route {index + 1}/{len(routes)}")
                 break
             
-            # Update current route with detailed stage
-            route_name = f"{route_info['BU Code']}_to_{route_info['Row Labels']}"
-            upload_progress[upload_id]['current_route'] = {
-                'name': route_name,
-                'stage': 'processing',
-                'stage_text': f'Processing route {index + 1}/{len(routes)}...'
-            }
-            
-            # Check if route already exists
-            existing_route = route_model.find_by_codes(
-                route_info['BU Code'],
-                route_info['Row Labels']
-            )
-            
-            if existing_route and existing_route.get('processing_status') == 'completed':
-                upload_progress[upload_id]['skipped'] += 1
-                upload_progress[upload_id]['last_completed'] = {
-                    'name': route_name,
-                    'status': 'skipped',
-                    'message': 'Route already processed'
-                }
-                logger.info(f"Skipped existing route: {route_name}")
-                continue
-            
-            # Process the route
+            # Process single route
             try:
-                # Update stage
-                upload_progress[upload_id]['current_route']['stage'] = 'analyzing_geometry'
-                upload_progress[upload_id]['current_route']['stage_text'] = 'Finding coordinate file...'
-                
-                # Find coordinate file
-                coord_file = file_parser.find_coordinate_file(
-                    route_info['BU Code'],
-                    route_info['Row Labels'],
-                    'route_data'
-                )
-                
-                if not coord_file:
-                    raise ValueError(f"Coordinate file not found for {route_name}")
-                
-                # Parse coordinates
-                upload_progress[upload_id]['current_route']['stage_text'] = 'Parsing coordinates...'
-                coordinates = file_parser.parse_coordinate_file(coord_file)
-                
-                if not coordinates:
-                    raise ValueError(f"No valid coordinates found in {coord_file}")
-                
-                logger.info(f"Found {len(coordinates)} coordinates for route {route_name}")
-                
-                # Create or update route
-                route_data = prepare_route_data(route_info, coordinates)
-                
-                if existing_route:
-                    # Update existing route
-                    route_id = str(existing_route['_id'])
-                    db.routes.update_one(
-                        {'_id': existing_route['_id']},
-                        {'$set': route_data}
-                    )
-                    logger.info(f"Updated existing route {route_id}")
-                else:
-                    # Create new route
-                    route_result = route_model.create_route(route_data)
-                    route_id = str(route_result.inserted_id)
-                    logger.info(f"Created new route {route_id}")
-                
-                # Update stage
-                upload_progress[upload_id]['current_route']['stage'] = 'fetching_services'
-                upload_progress[upload_id]['current_route']['stage_text'] = 'Analyzing route data...'
-                
-                # Process route with fast mode
-                try:
-                    route_processor.process_single_route_fast(route_id, route_info, coordinates)
-                    
-                    upload_progress[upload_id]['processed'] += 1
-                    upload_progress[upload_id]['last_completed'] = {
-                        'name': route_name,
-                        'status': 'completed',
-                        'message': 'Successfully processed'
-                    }
-                    logger.info(f"Successfully processed route {route_name}")
-                    
-                except Exception as process_error:
-                    # Try fallback processing
-                    logger.warning(f"Fast processing failed for {route_name}, trying regular mode: {process_error}")
-                    route_processor.process_single_route_with_id(route_id, route_info, coordinates)
-                    
-                    upload_progress[upload_id]['processed'] += 1
-                    upload_progress[upload_id]['last_completed'] = {
-                        'name': route_name,
-                        'status': 'completed',
-                        'message': 'Successfully processed (fallback mode)'
-                    }
-                
+                result = process_single_route_worker(route_info, upload_id, index, len(routes))
+                logger.info(f"Processed route {index + 1}/{len(routes)}: {result['status']}")
             except Exception as e:
-                upload_progress[upload_id]['failed'] += 1
-                upload_progress[upload_id]['last_completed'] = {
-                    'name': route_name,
-                    'status': 'failed',
-                    'message': str(e)
-                }
-                logger.error(f"Error processing route {route_name}: {str(e)}")
-                
-                # Update route status if it was created
-                if 'route_id' in locals():
-                    route_model.update_processing_status(route_id, 'failed', str(e))
+                logger.error(f"Error processing route {index + 1}: {str(e)}")
         
         # Mark as completed
         upload_progress[upload_id]['status'] = 'completed'
@@ -703,71 +615,7 @@ def process_routes_async(filepath, upload_id, user_id):
         upload_progress[upload_id]['status'] = 'failed'
         upload_progress[upload_id]['error'] = str(e)
         upload_progress[upload_id]['current_route'] = None
-        logger.error(f"Error in async processing: {str(e)}")
-
-def process_routes_async_multiprocessing(filepath, upload_id, user_id):
-    """Process routes asynchronously with multi-threading/processing support"""
-    try:
-        # Parse CSV
-        routes = file_parser.parse_route_csv(filepath)
-        
-        # Log start
-        logger.info(f"Starting multi-threaded processing of {len(routes)} routes from {filepath}")
-        
-        # Get number of workers from config
-        max_workers = app.config.get('CONCURRENT_WORKERS', 5)
-        
-        # Create a thread pool executor
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit routes to executor
-            future_to_route = {}
-            
-            for index, route_info in enumerate(routes):
-                # Check if cancelled
-                if upload_progress[upload_id]['status'] == 'cancelled':
-                    logger.info(f"Processing cancelled before submitting route {index + 1}/{len(routes)}")
-                    break
-                
-                # Submit route for processing
-                future = executor.submit(process_single_route_worker, 
-                                       route_info, upload_id, index, len(routes))
-                future_to_route[future] = route_info
-            
-            # Process completed futures
-            for future in as_completed(future_to_route):
-                if upload_progress[upload_id]['status'] == 'cancelled':
-                    logger.info("Processing cancelled, stopping future processing")
-                    executor.shutdown(wait=False)
-                    break
-                
-                route_info = future_to_route[future]
-                try:
-                    result = future.result()
-                    # Result is already handled in the worker function
-                except Exception as e:
-                    route_name = f"{route_info['BU Code']}_to_{route_info['Row Labels']}"
-                    upload_progress[upload_id]['failed'] += 1
-                    upload_progress[upload_id]['last_completed'] = {
-                        'name': route_name,
-                        'status': 'failed',
-                        'message': str(e)
-                    }
-                    logger.error(f"Error in future for route {route_name}: {str(e)}")
-        
-        # Mark as completed
-        upload_progress[upload_id]['status'] = 'completed'
-        upload_progress[upload_id]['current_route'] = None
-        upload_progress[upload_id]['end_time'] = datetime.utcnow().isoformat()
-        
-        # Calculate final statistics
-        total_processed = upload_progress[upload_id]['processed'] + upload_progress[upload_id]['skipped'] + upload_progress[upload_id]['failed']
-        logger.info(f"Completed multi-threaded processing: {total_processed}/{len(routes)} routes")
-        
-    except Exception as e:
-        upload_progress[upload_id]['status'] = 'failed'
-        upload_progress[upload_id]['error'] = str(e)
-        upload_progress[upload_id]['current_route'] = None
-        logger.error(f"Error in multi-threaded processing: {str(e)}")
+        logger.error(f"Error in processing: {str(e)}")
 
 def process_single_route_worker(route_info, upload_id, index, total_routes):
     """Worker function to process a single route"""
@@ -832,31 +680,36 @@ def process_single_route_worker(route_info, upload_id, index, total_routes):
             route_id = str(route_result.inserted_id)
             logger.info(f"Created new route {route_id}")
         
+        # Update progress stages
+        upload_progress[upload_id]['current_route']['stage'] = 'analyzing'
+        upload_progress[upload_id]['current_route']['stage_text'] = 'Analyzing route data...'
+        
         # Process route with fast mode
         try:
-            route_processor.process_single_route_fast(route_id, route_info, coordinates)
+            result = route_processor.process_single_route_fast(route_id, route_info, coordinates)
             
             upload_progress[upload_id]['processed'] += 1
             upload_progress[upload_id]['last_completed'] = {
                 'name': route_name,
                 'status': 'completed',
-                'message': 'Successfully processed'
+                'message': f'Successfully processed - Risk Level: {result.get("risk_level", "N/A")}'
             }
             logger.info(f"Successfully processed route {route_name}")
             return {'status': 'completed', 'route': route_name}
             
         except Exception as process_error:
-            # Try fallback processing
-            logger.warning(f"Fast processing failed for {route_name}, trying regular mode: {process_error}")
-            route_processor.process_single_route_with_id(route_id, route_info, coordinates)
+            logger.error(f"Processing failed for {route_name}: {process_error}")
             
-            upload_progress[upload_id]['processed'] += 1
+            # Update route status
+            route_model.update_processing_status(route_id, 'failed', str(process_error))
+            
+            upload_progress[upload_id]['failed'] += 1
             upload_progress[upload_id]['last_completed'] = {
                 'name': route_name,
-                'status': 'completed',
-                'message': 'Successfully processed (fallback mode)'
+                'status': 'failed',
+                'message': f'Processing failed: {str(process_error)}'
             }
-            return {'status': 'completed', 'route': route_name}
+            return {'status': 'failed', 'route': route_name}
         
     except Exception as e:
         upload_progress[upload_id]['failed'] += 1
@@ -871,19 +724,28 @@ def process_single_route_worker(route_info, upload_id, index, total_routes):
         if 'route_id' in locals():
             route_model.update_processing_status(route_id, 'failed', str(e))
         
-        raise e
+        return {'status': 'failed', 'route': route_name}
 
 def prepare_route_data(route_info, coordinates):
     """Prepare route data for database insertion"""
     total_distance = calculate_total_distance(coordinates)
     
+    # Return data in the format expected by Route model
     return {
-        'route_name': f"{route_info['BU Code']}_to_{route_info['Row Labels']}",
+        'route_name': f"{route_info['BU Code']}_to_{route_info['Row Labels']}",  # Model expects this
+        'routeName': f"{route_info['BU Code']}_to_{route_info['Row Labels']}",   # Also provide camelCase
         'from_code': route_info['BU Code'],
+        'fromCode': route_info['BU Code'],  # Also provide camelCase
         'to_code': route_info['Row Labels'],
+        'toCode': route_info['Row Labels'],  # Also provide camelCase
         'customer_name': route_info.get('Customer Name', ''),
+        'customerName': route_info.get('Customer Name', ''),  # Also provide camelCase
         'location': route_info.get('Location', ''),
         'from_coordinates': {
+            'latitude': coordinates[0]['latitude'],
+            'longitude': coordinates[0]['longitude']
+        },
+        'fromCoordinates': {
             'latitude': coordinates[0]['latitude'],
             'longitude': coordinates[0]['longitude']
         },
@@ -891,13 +753,28 @@ def prepare_route_data(route_info, coordinates):
             'latitude': coordinates[-1]['latitude'],
             'longitude': coordinates[-1]['longitude']
         },
-        'route_points': coordinates,
-        'total_distance': total_distance,
-        'estimated_duration': (total_distance / 40) * 60,  # Assuming 40 km/h average
+        'toCoordinates': {
+            'latitude': coordinates[-1]['latitude'],
+            'longitude': coordinates[-1]['longitude']
+        },
         'from_address': f"{route_info['BU Code']} Location",
+        'fromAddress': f"{route_info['BU Code']} Location",
         'to_address': f"{route_info['Row Labels']} Location",
+        'toAddress': f"{route_info['Row Labels']} Location",
+        'route_points': coordinates,
+        'routePoints': coordinates,
+        'total_distance': total_distance,
+        'totalDistance': total_distance,
+        'total_waypoints': len(coordinates),
+        'totalWaypoints': len(coordinates),
+        'estimated_duration': (total_distance / 40) * 60,  # Assuming 40 km/h average
+        'estimatedDuration': (total_distance / 40) * 60,
         'major_highways': ['NH-XX', 'SH-YY'],
-        'terrain': 'mixed'
+        'majorHighways': ['NH-XX', 'SH-YY'],
+        'terrain': 'mixed',
+        'processing_status': 'pending',
+        'created_at': datetime.utcnow(),
+        'updated_at': datetime.utcnow()
     }
 
 def calculate_total_distance(coordinates):

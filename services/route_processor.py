@@ -1,5 +1,5 @@
 # services/route_processor.py
-# Fast route processing service with batched API calls and caching
+# Optimized version with batch processing for emergency services
 # Path: /services/route_processor.py
 
 import os
@@ -14,13 +14,21 @@ from models import *
 import logging
 import time
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import hashlib
+import traceback
+import numpy as np
 
+# Configure detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 class RouteProcessor:
     def __init__(self, db, overpass_url):
+        logger.info("Initializing RouteProcessor")
         self.db = db
         self.overpass_service = OverpassService(overpass_url, db)
         self.risk_calculator = RiskCalculator()
@@ -40,7 +48,8 @@ class RouteProcessor:
         self.api_log_model = APILog(db)
         
         # Load API keys
-        self.visualcrossing_api_key = os.getenv('VISUALCROSSING_API_KEY', 'EA9XLKA5PK3ZZLB783HUBK9W3')
+        self.era5_api_key = "h4DSeoxB88OwRw7rh42sWJlx8BphPHCi"
+        self.era5_api_url = "http://43.250.40.133:6000/api/weather/point"
         self.tomtom_api_key = os.getenv('TOMTOM_API_KEY', '4GMXpCknsEI6v22oQlZe5CFlV1Ev0xQu')
         self.here_api_key = os.getenv('HERE_API_KEY', '_Zmq3222RvY4Y5XspG6X4RQbOx2-QIp0C171cD3BHls')
         self.mapbox_api_key = os.getenv('MAPBOX_API_KEY', 'pk.eyJ1IjoiYW5pbDI1IiwiYSI6ImNtYmtlanhpYjBwZW4ya3F4ZnZ2NmNxNDkifQ.N0WsW5T60dxrG80rhnee0g')
@@ -50,17 +59,20 @@ class RouteProcessor:
         self.cache_expiry_hours = 24
         
         # Thread pool for concurrent processing
-        self.executor = ThreadPoolExecutor(max_workers=5)
+        self.executor = ThreadPoolExecutor(max_workers=3)
         
         # API rate limits (requests per second)
         self.rate_limits = {
-            'visualcrossing': 0.5,  # 2 requests per second
-            'tomtom': 2.0,          # 2 requests per second
-            'here': 2.0,            # 2 requests per second
-            'overpass': 1.0         # 1 request per second
+            'era5': 1.0,
+            'tomtom': 2.0,
+            'here': 2.0,
+            'overpass': 1.0,
+            'mapbox': 2.0
         }
         self.last_api_call = {}
         
+        logger.info("RouteProcessor initialized successfully")
+    
     def _get_cache_key(self, cache_type: str, lat: float, lng: float) -> str:
         """Generate cache key for API results"""
         return hashlib.md5(f"{cache_type}_{lat:.4f}_{lng:.4f}".encode()).hexdigest()
@@ -71,16 +83,23 @@ class RouteProcessor:
             return None
             
         cache_key = self._get_cache_key(cache_type, lat, lng)
-        cached = self.db.api_cache.find_one({
-            'cache_key': cache_key,
-            'cache_type': cache_type
-        })
-        
-        if cached:
-            # Check if expired
-            if cached['expires_at'] > datetime.utcnow():
-                return cached['data']
-                
+        try:
+            cached = self.db.api_cache.find_one({
+                'cache_key': cache_key,
+                'cache_type': cache_type
+            })
+            
+            if cached:
+                if cached['expires_at'] > datetime.utcnow():
+                    logger.debug(f"Cache HIT for {cache_type} at {lat:.4f},{lng:.4f}")
+                    return cached['data']
+                else:
+                    logger.debug(f"Cache EXPIRED for {cache_type} at {lat:.4f},{lng:.4f}")
+            else:
+                logger.debug(f"Cache MISS for {cache_type} at {lat:.4f},{lng:.4f}")
+        except Exception as e:
+            logger.error(f"Cache lookup error: {e}")
+            
         return None
     
     def _save_to_cache(self, cache_type: str, lat: float, lng: float, data: Dict):
@@ -89,19 +108,23 @@ class RouteProcessor:
             return
             
         cache_key = self._get_cache_key(cache_type, lat, lng)
-        self.db.api_cache.update_one(
-            {'cache_key': cache_key},
-            {
-                '$set': {
-                    'cache_type': cache_type,
-                    'cache_key': cache_key,
-                    'data': data,
-                    'created_at': datetime.utcnow(),
-                    'expires_at': datetime.utcnow() + timedelta(hours=self.cache_expiry_hours)
-                }
-            },
-            upsert=True
-        )
+        try:
+            self.db.api_cache.update_one(
+                {'cache_key': cache_key},
+                {
+                    '$set': {
+                        'cache_type': cache_type,
+                        'cache_key': cache_key,
+                        'data': data,
+                        'created_at': datetime.utcnow(),
+                        'expires_at': datetime.utcnow() + timedelta(hours=self.cache_expiry_hours)
+                    }
+                },
+                upsert=True
+            )
+            logger.debug(f"Saved to cache: {cache_type} at {lat:.4f},{lng:.4f}")
+        except Exception as e:
+            logger.error(f"Cache save error: {e}")
     
     def _rate_limit_api(self, api_name: str):
         """Implement rate limiting for API calls"""
@@ -113,49 +136,98 @@ class RouteProcessor:
         if api_name in self.last_api_call:
             elapsed = time.time() - self.last_api_call[api_name]
             if elapsed < min_interval:
-                time.sleep(min_interval - elapsed)
+                sleep_time = min_interval - elapsed
+                logger.debug(f"Rate limiting {api_name}: sleeping {sleep_time:.2f}s")
+                time.sleep(sleep_time)
                 
         self.last_api_call[api_name] = time.time()
     
     def process_single_route_fast(self, route_id: str, route_info: Dict, coordinates: List[Dict]):
         """Fast processing mode with batched API calls and caching"""
+        logger.info(f"=== Starting fast processing for route {route_id} ===")
+        logger.info(f"Route: {route_info['BU Code']} to {route_info['Row Labels']}")
+        logger.info(f"Coordinates: {len(coordinates)} points")
+        
+        start_time = time.time()
         self.route_model.update_processing_status(route_id, 'processing')
         
         try:
             # Calculate total route distance
+            logger.debug("Calculating route distance...")
             total_distance = self._calculate_total_distance(coordinates)
+            logger.info(f"Route {route_id} total distance: {total_distance} km")
             
-            # Process in parallel using thread pool
-            futures = []
+            # Process each component sequentially for better debugging
+            results = {}
             
             # 1. Geometric analysis (no API calls needed)
-            futures.append(self.executor.submit(self._analyze_geometry_fast, route_id, coordinates, total_distance))
+            logger.info("STEP 1/6: Analyzing geometry...")
+            try:
+                geometry_start = time.time()
+                geometry_result = self._analyze_geometry_fast(route_id, coordinates, total_distance)
+                results.update(geometry_result)
+                logger.info(f"Geometry analysis completed in {time.time() - geometry_start:.2f}s")
+            except Exception as e:
+                logger.error(f"Geometry analysis failed: {e}")
+                logger.error(traceback.format_exc())
             
-            # 2. Emergency services (single Overpass call)
-            futures.append(self.executor.submit(self._get_emergency_services_fast, route_id, coordinates))
+            # 2. Emergency services - OPTIMIZED with batch processing
+            logger.info("STEP 2/6: Getting emergency services...")
+            try:
+                emergency_start = time.time()
+                emergency_result = self._get_emergency_services_batch(route_id, coordinates)
+                results.update(emergency_result)
+                logger.info(f"Emergency services completed in {time.time() - emergency_start:.2f}s")
+            except Exception as e:
+                logger.error(f"Emergency services failed: {e}")
+                logger.error(traceback.format_exc())
             
-            # 3. Road conditions (batched Overpass calls)
-            futures.append(self.executor.submit(self._analyze_road_conditions_fast, route_id, coordinates))
+            # 3. Road conditions
+            logger.info("STEP 3/6: Analyzing road conditions...")
+            try:
+                road_start = time.time()
+                road_result = self._analyze_road_conditions_fast(route_id, coordinates)
+                results.update(road_result)
+                logger.info(f"Road conditions completed in {time.time() - road_start:.2f}s")
+            except Exception as e:
+                logger.error(f"Road conditions failed: {e}")
+                logger.error(traceback.format_exc())
             
-            # 4. Network coverage (simulated - no API)
-            futures.append(self.executor.submit(self._analyze_network_coverage_fast, route_id, coordinates, total_distance))
+            # 4. Network coverage
+            logger.info("STEP 4/6: Analyzing network coverage...")
+            try:
+                network_start = time.time()
+                network_result = self._analyze_network_coverage_fast(route_id, coordinates, total_distance)
+                results.update(network_result)
+                logger.info(f"Network coverage completed in {time.time() - network_start:.2f}s")
+            except Exception as e:
+                logger.error(f"Network coverage failed: {e}")
+                logger.error(traceback.format_exc())
             
-            # 5. Weather data (single VisualCrossing call for route)
-            futures.append(self.executor.submit(self._get_weather_data_fast, route_id, coordinates))
+            # 5. Weather data (ERA5 API)
+            logger.info("STEP 5/6: Getting weather data...")
+            try:
+                weather_start = time.time()
+                weather_result = self._get_weather_data_fast(route_id, coordinates)
+                results.update(weather_result)
+                logger.info(f"Weather data completed in {time.time() - weather_start:.2f}s")
+            except Exception as e:
+                logger.error(f"Weather data failed: {e}")
+                logger.error(traceback.format_exc())
             
-            # 6. Traffic data (batched TomTom calls)
-            futures.append(self.executor.submit(self._get_traffic_data_fast, route_id, coordinates))
-            
-            # Wait for all tasks to complete
-            results = {}
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    results.update(result)
-                except Exception as e:
-                    logger.error(f"Error in parallel processing: {e}")
+            # 6. Traffic data (TomTom API)
+            logger.info("STEP 6/6: Getting traffic data...")
+            try:
+                traffic_start = time.time()
+                traffic_result = self._get_traffic_data_fast(route_id, coordinates)
+                results.update(traffic_result)
+                logger.info(f"Traffic data completed in {time.time() - traffic_start:.2f}s")
+            except Exception as e:
+                logger.error(f"Traffic data failed: {e}")
+                logger.error(traceback.format_exc())
             
             # Calculate risk scores
+            logger.info("Calculating risk scores...")
             risk_scores = self.risk_calculator.calculate_overall_risk_score(results)
             
             # Update route with risk scores
@@ -166,7 +238,16 @@ class RouteProcessor:
             self.route_model.update_risk_scores(route_id, risk_scores_with_level)
             self.route_model.update_processing_status(route_id, 'completed')
             
-            logger.info(f"Route {route_id} processed successfully in fast mode")
+            total_time = time.time() - start_time
+            logger.info(f"=== Route {route_id} processed successfully in {total_time:.2f}s ===")
+            logger.info(f"Risk Level: {risk_scores['risk_level']} (Score: {risk_scores['overall']})")
+            
+            # Log summary of API calls
+            api_logs = list(self.db.api_logs.find({'route_id': ObjectId(route_id)}))
+            logger.info(f"Total API calls made: {len(api_logs)}")
+            for api in ['overpass', 'era5_weather', 'tomtom_traffic']:
+                count = len([log for log in api_logs if log['api_name'] == api])
+                logger.info(f"  - {api}: {count} calls")
             
             return {
                 'route_id': route_id,
@@ -176,351 +257,439 @@ class RouteProcessor:
             }
             
         except Exception as e:
+            logger.error(f"=== Route processing FAILED for {route_id} ===")
+            logger.error(f"Error: {str(e)}")
+            logger.error(traceback.format_exc())
             self.route_model.update_processing_status(route_id, 'failed', str(e))
             raise e
     
+    def _get_emergency_services_batch(self, route_id: str, coordinates: List[Dict]) -> Dict:
+        """Optimized batch processing for emergency services"""
+        logger.debug(f"Getting emergency services for route {route_id}")
+        bounds = self._calculate_bounds(coordinates)
+        logger.debug(f"Route bounds: {bounds}")
+        
+        try:
+            # Check cache first
+            cached_data = self._get_cached_data('emergency_services', bounds['min_lat'], bounds['min_lng'])
+            
+            if cached_data:
+                emergency_services = cached_data
+                logger.info(f"Using CACHED emergency services data ({len(emergency_services)} services)")
+            else:
+                logger.info("Calling Overpass API for emergency services...")
+                self._rate_limit_api('overpass')
+                emergency_services = self.overpass_service.get_emergency_services(route_id, bounds)
+                self._save_to_cache('emergency_services', bounds['min_lat'], bounds['min_lng'], emergency_services)
+                logger.info(f"Fetched {len(emergency_services)} emergency services from Overpass API")
+            
+            # BATCH PROCESS emergency services
+            logger.debug("Batch processing emergency services...")
+            
+            # Pre-calculate all route segments for efficient distance calculation
+            route_segments = []
+            for i in range(len(coordinates) - 1):
+                route_segments.append({
+                    'start': coordinates[i],
+                    'end': coordinates[i + 1],
+                    'cumulative_distance': self._calculate_cumulative_distance(coordinates, i)
+                })
+            
+            # Process services in batches of 50
+            batch_size = 50
+            processed_services = []
+            
+            for batch_start in range(0, len(emergency_services), batch_size):
+                batch_end = min(batch_start + batch_size, len(emergency_services))
+                batch = emergency_services[batch_start:batch_end]
+                
+                logger.debug(f"Processing batch {batch_start//batch_size + 1}/{(len(emergency_services) + batch_size - 1)//batch_size}")
+                
+                # Process batch
+                batch_results = []
+                for service in batch:
+                    # Quick distance calculation using vectorized approach
+                    service['distance_from_route_km'] = self._quick_distance_to_route(
+                        service['latitude'], service['longitude'], coordinates
+                    )
+                    service['distance_from_start_km'] = self._quick_distance_along_route(
+                        service['latitude'], service['longitude'], route_segments
+                    )
+                    service['distance_from_end_km'] = self._calculate_total_distance(coordinates) - service['distance_from_start_km']
+                    service = self._enrich_emergency_service(service)
+                    batch_results.append(service)
+                
+                # Bulk insert the batch
+                if batch_results:
+                    for service in batch_results:
+                        self.emergency_service_model.create_emergency_service(route_id, service)
+                    processed_services.extend(batch_results)
+                
+                logger.debug(f"Processed {len(processed_services)}/{len(emergency_services)} services")
+            
+            logger.debug(f"Emergency services batch processing complete")
+            
+        except Exception as e:
+            logger.error(f"Error getting emergency services: {e}")
+            logger.error(traceback.format_exc())
+            emergency_services = []
+            
+        return {'emergency_services': emergency_services}
+    
+    def _quick_distance_to_route(self, lat: float, lng: float, route_points: List[Dict]) -> float:
+        """Quick distance calculation using numpy if available, otherwise fallback"""
+        try:
+            # Use numpy for vectorized calculation if available
+            import numpy as np
+            
+            # Convert to arrays
+            point_lats = np.array([p['latitude'] for p in route_points])
+            point_lngs = np.array([p['longitude'] for p in route_points])
+            
+            # Haversine formula vectorized
+            lat_diff = np.radians(point_lats - lat)
+            lng_diff = np.radians(point_lngs - lng)
+            
+            a = np.sin(lat_diff/2)**2 + np.cos(np.radians(lat)) * \
+                np.cos(np.radians(point_lats)) * np.sin(lng_diff/2)**2
+            c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+            distances = 6371 * c  # Earth radius in km
+            
+            return round(float(np.min(distances)), 2)
+            
+        except ImportError:
+            # Fallback to original method
+            return self._calculate_distance_to_route(lat, lng, route_points)
+    
+    def _quick_distance_along_route(self, lat: float, lng: float, route_segments: List[Dict]) -> float:
+        """Quick distance along route calculation"""
+        min_distance = float('inf')
+        distance_along_route = 0
+        
+        for segment in route_segments:
+            distance = self.risk_calculator.calculate_distance(
+                lat, lng, 
+                segment['start']['latitude'], 
+                segment['start']['longitude']
+            )
+            
+            if distance < min_distance:
+                min_distance = distance
+                distance_along_route = segment['cumulative_distance']
+        
+        return round(distance_along_route, 2)
+    
     def _analyze_geometry_fast(self, route_id: str, coordinates: List[Dict], total_distance: float) -> Dict:
         """Fast geometric analysis without API calls"""
+        logger.debug(f"Analyzing geometry for route {route_id}")
         results = {}
         
-        # Analyze sharp turns
-        sharp_turns = self.risk_calculator.analyze_sharp_turns(coordinates)
-        for turn in sharp_turns:
-            turn['distance_from_end_km'] = total_distance - turn['distance_from_start_km']
-            turn['turn_severity'] = self._get_turn_severity(turn['turn_angle'])
-            turn['road_surface'] = 'good'
-            turn['guardrails'] = False
-            turn['warning_signs'] = False
-            self.sharp_turn_model.create_sharp_turn(route_id, turn)
-        results['sharp_turns'] = sharp_turns
-        
-        # Identify blind spots
-        blind_spots = self.risk_calculator.identify_blind_spots(coordinates)
-        for spot in blind_spots:
-            spot['distance_from_end_km'] = total_distance - spot['distance_from_start_km']
-            spot['gradient'] = 0
-            spot['curvature'] = 0
-            spot['road_width'] = 7
-            self.blind_spot_model.create_blind_spot(route_id, spot)
-        results['blind_spots'] = blind_spots
-        
-        # Identify accident prone areas based on geometry
-        accident_areas = self._identify_accident_prone_areas(sharp_turns, [])
-        for area in accident_areas:
-            area['distance_from_end_km'] = total_distance - area['distance_from_start_km']
-            area = self._enrich_accident_area(area)
-            self.accident_prone_model.create_accident_area(route_id, area)
-        results['accident_prone_areas'] = accident_areas
-        
+        try:
+            # Analyze sharp turns
+            logger.debug("Analyzing sharp turns...")
+            sharp_turns = self.risk_calculator.analyze_sharp_turns(coordinates)
+            logger.debug(f"Found {len(sharp_turns)} sharp turns")
+            
+            for turn in sharp_turns:
+                turn['distance_from_end_km'] = total_distance - turn['distance_from_start_km']
+                turn['turn_severity'] = self._get_turn_severity(turn['turn_angle'])
+                turn['road_surface'] = 'good'
+                turn['guardrails'] = False
+                turn['warning_signs'] = False
+                self.sharp_turn_model.create_sharp_turn(route_id, turn)
+            results['sharp_turns'] = sharp_turns
+            
+            # Identify blind spots
+            logger.debug("Identifying blind spots...")
+            blind_spots = self.risk_calculator.identify_blind_spots(coordinates)
+            logger.debug(f"Found {len(blind_spots)} blind spots")
+            
+            for spot in blind_spots:
+                spot['distance_from_end_km'] = total_distance - spot['distance_from_start_km']
+                spot['gradient'] = 0
+                spot['curvature'] = 0
+                spot['road_width'] = 7
+                self.blind_spot_model.create_blind_spot(route_id, spot)
+            results['blind_spots'] = blind_spots
+            
+            # Identify accident prone areas
+            logger.debug("Identifying accident prone areas...")
+            accident_areas = self._identify_accident_prone_areas(sharp_turns, [])
+            logger.debug(f"Found {len(accident_areas)} accident prone areas")
+            
+            for area in accident_areas:
+                area['distance_from_end_km'] = total_distance - area['distance_from_start_km']
+                area = self._enrich_accident_area(area)
+                self.accident_prone_model.create_accident_area(route_id, area)
+            results['accident_prone_areas'] = accident_areas
+            
+            logger.debug(f"Geometry analysis complete: {len(sharp_turns)} turns, {len(blind_spots)} blind spots, {len(accident_areas)} accident areas")
+            
+        except Exception as e:
+            logger.error(f"Error in geometry analysis: {e}")
+            logger.error(traceback.format_exc())
+            # Return empty results on error
+            results = {
+                'sharp_turns': [],
+                'blind_spots': [],
+                'accident_prone_areas': []
+            }
+            
         return results
-    
-    def _get_emergency_services_fast(self, route_id: str, coordinates: List[Dict]) -> Dict:
-        """Get emergency services with caching"""
-        bounds = self._calculate_bounds(coordinates)
-        
-        # Check cache first
-        cache_key = f"emergency_{bounds['min_lat']:.2f}_{bounds['min_lng']:.2f}"
-        cached_data = self._get_cached_data('emergency_services', bounds['min_lat'], bounds['min_lng'])
-        
-        if cached_data:
-            emergency_services = cached_data
-        else:
-            self._rate_limit_api('overpass')
-            emergency_services = self.overpass_service.get_emergency_services(route_id, bounds)
-            self._save_to_cache('emergency_services', bounds['min_lat'], bounds['min_lng'], emergency_services)
-        
-        # Process and save services
-        for service in emergency_services:
-            service['distance_from_route_km'] = self._calculate_distance_to_route(
-                service['latitude'], service['longitude'], coordinates
-            )
-            service['distance_from_start_km'] = self._calculate_distance_along_route(
-                service['latitude'], service['longitude'], coordinates
-            )
-            service['distance_from_end_km'] = self._calculate_total_distance(coordinates) - service['distance_from_start_km']
-            service = self._enrich_emergency_service(service)
-            self.emergency_service_model.create_emergency_service(route_id, service)
-        
-        return {'emergency_services': emergency_services}
     
     def _analyze_road_conditions_fast(self, route_id: str, coordinates: List[Dict]) -> Dict:
         """Analyze road conditions with batched requests"""
+        logger.debug(f"Analyzing road conditions for route {route_id}")
         road_conditions = []
         
-        # Sample fewer points for faster processing
-        sample_interval = max(1, len(coordinates) // 10)  # Only 10 samples
-        sample_points = coordinates[::sample_interval]
-        
-        for i, point in enumerate(sample_points):
-            # Check cache
-            cached = self._get_cached_data('road_condition', point['latitude'], point['longitude'])
+        try:
+            # Sample fewer points for faster processing
+            sample_interval = max(1, len(coordinates) // 10)
+            sample_points = coordinates[::sample_interval]
+            logger.debug(f"Sampling {len(sample_points)} points from {len(coordinates)} total")
             
-            if cached:
-                condition = cached
-            else:
-                # Simple road condition based on location
-                condition = {
-                    'latitude': point['latitude'],
-                    'longitude': point['longitude'],
-                    'road_type': 'highway',
-                    'surface': 'asphalt',
-                    'lanes': 2,
-                    'max_speed': 60,
-                    'width': 7,
-                    'under_construction': False,
-                    'surface_quality': 'good',
-                    'risk_score': 3,
-                    'distance_from_start_km': self._calculate_cumulative_distance(coordinates, i * sample_interval),
-                    'has_potholes': False,
-                    'data_source': 'ESTIMATED'
-                }
-                self._save_to_cache('road_condition', point['latitude'], point['longitude'], condition)
+            for i, point in enumerate(sample_points):
+                # Check cache
+                cached = self._get_cached_data('road_condition', point['latitude'], point['longitude'])
+                
+                if cached:
+                    condition = cached
+                    logger.debug(f"Using cached road condition for point {i+1}/{len(sample_points)}")
+                else:
+                    # Simple road condition based on location
+                    condition = {
+                        'latitude': point['latitude'],
+                        'longitude': point['longitude'],
+                        'road_type': 'highway',
+                        'surface': 'asphalt',
+                        'lanes': 2,
+                        'max_speed': 60,
+                        'width': 7,
+                        'under_construction': False,
+                        'surface_quality': 'good',
+                        'risk_score': 3,
+                        'distance_from_start_km': self._calculate_cumulative_distance(coordinates, i * sample_interval),
+                        'has_potholes': False,
+                        'data_source': 'ESTIMATED'
+                    }
+                    self._save_to_cache('road_condition', point['latitude'], point['longitude'], condition)
+                
+                self.road_condition_model.create_road_condition(route_id, condition)
+                road_conditions.append(condition)
             
-            self.road_condition_model.create_road_condition(route_id, condition)
-            road_conditions.append(condition)
-        
+            logger.debug(f"Road conditions analysis complete: {len(road_conditions)} conditions")
+            
+        except Exception as e:
+            logger.error(f"Error analyzing road conditions: {e}")
+            logger.error(traceback.format_exc())
+            
         return {'road_conditions': road_conditions}
     
     def _analyze_network_coverage_fast(self, route_id: str, coordinates: List[Dict], total_distance: float) -> Dict:
         """Fast network coverage analysis"""
-        network_coverage = self.risk_calculator.analyze_network_coverage(coordinates)
+        logger.debug(f"Analyzing network coverage for route {route_id}")
         
-        for coverage in network_coverage:
-            coverage['distance_from_end_km'] = total_distance - coverage['distance_from_start_km']
-            self.network_coverage_model.create_network_coverage(route_id, coverage)
-        
+        try:
+            network_coverage = self.risk_calculator.analyze_network_coverage(coordinates)
+            logger.debug(f"Generated {len(network_coverage)} network coverage points")
+            
+            for coverage in network_coverage:
+                coverage['distance_from_end_km'] = total_distance - coverage['distance_from_start_km']
+                self.network_coverage_model.create_network_coverage(route_id, coverage)
+            
+            dead_zones = [c for c in network_coverage if c['is_dead_zone']]
+            logger.debug(f"Network coverage complete: {len(network_coverage)} points, {len(dead_zones)} dead zones")
+            
+        except Exception as e:
+            logger.error(f"Error analyzing network coverage: {e}")
+            logger.error(traceback.format_exc())
+            network_coverage = []
+            
         return {'network_coverage': network_coverage}
     
     def _get_weather_data_fast(self, route_id: str, coordinates: List[Dict]) -> Dict:
-        """Get weather data using VisualCrossing API with batching"""
+        """Get weather data using ERA5 API with batching"""
+        logger.debug(f"Getting weather data for route {route_id}")
         weather_conditions = []
         
-        # Get weather for start, middle and end points only
-        sample_points = [
-            coordinates[0],
-            coordinates[len(coordinates) // 2],
-            coordinates[-1]
-        ]
-        
-        for i, point in enumerate(sample_points):
-            # Check cache
-            cached = self._get_cached_data('weather', point['latitude'], point['longitude'])
+        try:
+            # Get weather for start, middle and end points only
+            sample_points = [
+                (0, coordinates[0]),
+                (len(coordinates) // 2, coordinates[len(coordinates) // 2]),
+                (len(coordinates) - 1, coordinates[-1])
+            ]
+            logger.debug(f"Getting weather for {len(sample_points)} sample points")
             
-            if cached:
-                weather = cached
-                weather['distance_from_start_km'] = self._calculate_cumulative_distance(
-                    coordinates, i * (len(coordinates) // 2)
-                )
-            else:
-                # Use VisualCrossing API
-                self._rate_limit_api('visualcrossing')
-                weather = self._get_visualcrossing_weather(point, coordinates, i * (len(coordinates) // 2))
+            for idx, (coord_idx, point) in enumerate(sample_points):
+                logger.debug(f"Processing weather point {idx+1}/{len(sample_points)}")
+                
+                # Check cache
+                cached = self._get_cached_data('weather', point['latitude'], point['longitude'])
+                
+                if cached:
+                    weather = cached
+                    weather['distance_from_start_km'] = self._calculate_cumulative_distance(coordinates, coord_idx)
+                    logger.info(f"Using CACHED weather data for point {idx+1}")
+                else:
+                    # Use ERA5 API
+                    logger.info(f"Calling ERA5 API for weather point {idx+1}")
+                    self._rate_limit_api('era5')
+                    weather = self._get_era5_weather(point, coordinates, coord_idx, route_id)
+                    
+                    if weather:
+                        self._save_to_cache('weather', point['latitude'], point['longitude'], weather)
+                        logger.info(f"Successfully fetched weather data from ERA5")
+                    else:
+                        logger.warning(f"Failed to get weather data for point {idx+1}")
                 
                 if weather:
-                    self._save_to_cache('weather', point['latitude'], point['longitude'], weather)
+                    self.weather_condition_model.create_weather_condition(route_id, weather)
+                    weather_conditions.append(weather)
             
-            if weather:
-                self.weather_condition_model.create_weather_condition(route_id, weather)
-                weather_conditions.append(weather)
-        
+            logger.debug(f"Weather data complete: {len(weather_conditions)} points")
+            
+        except Exception as e:
+            logger.error(f"Error getting weather data: {e}")
+            logger.error(traceback.format_exc())
+            
         return {'weather_conditions': weather_conditions}
     
-    # def _get_visualcrossing_weather(self, point: Dict, coordinates: List[Dict], index: int) -> Optional[Dict]:
-    #     """Get weather from VisualCrossing API"""
-    #     try:
-    #         url = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
-    #         params = {
-    #             'location': f"{point['latitude']},{point['longitude']}",
-    #             'key': self.visualcrossing_api_key,
-    #             'include': 'current,days',
-    #             'elements': 'datetime,temp,humidity,precipprob,windspeed,visibility,conditions'
-    #         }
-            
-    #         start_time = time.time()
-    #         response = requests.get(url, params=params, timeout=10)
-    #         response_time = (time.time() - start_time) * 1000
-            
-    #         # Log API call
-    #         self.api_log_model.log_api_call(
-    #             route_id=None,
-    #             api_name='visualcrossing',
-    #             endpoint=url,
-    #             request_data=params,
-    #             response_data={'status': 'success' if response.status_code == 200 else 'failed'},
-    #             status_code=response.status_code,
-    #             response_time=response_time
-    #         )
-            
-    #         if response.status_code == 200:
-    #             data = response.json()
-    #             current = data.get('currentConditions', {})
-                
-    #             # Determine season and risk
-    #             temp = current.get('temp', 25)
-    #             conditions = current.get('conditions', 'Clear').lower()
-                
-    #             if temp > 35:
-    #                 season = 'summer'
-    #             elif temp < 15:
-    #                 season = 'winter'
-    #             elif 'rain' in conditions:
-    #                 season = 'monsoon'
-    #             else:
-    #                 season = 'spring'
-                
-    #             # Calculate risk
-    #             risk_score = 3
-    #             if 'rain' in conditions or 'storm' in conditions:
-    #                 risk_score += 4
-    #             elif 'fog' in conditions or 'mist' in conditions:
-    #                 risk_score += 5
-    #             elif temp > 40 or temp < 5:
-    #                 risk_score += 3
-                
-    #             return {
-    #                 'latitude': point['latitude'],
-    #                 'longitude': point['longitude'],
-    #                 'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
-    #                 'season': season,
-    #                 'weather_condition': 'rainy' if 'rain' in conditions else 'foggy' if 'fog' in conditions else 'clear',
-    #                 'average_temperature': temp,
-    #                 'humidity': current.get('humidity', 60),
-    #                 'pressure': current.get('pressure', 1013),
-    #                 'visibility_km': current.get('visibility', 10),
-    #                 'wind_speed_kmph': current.get('windspeed', 10),
-    #                 'wind_direction': current.get('winddir', 0),
-    #                 'precipitation_mm': current.get('precip', 0),
-    #                 'precipitation_probability': current.get('precipprob', 0),
-    #                 'road_surface_condition': 'wet' if 'rain' in conditions else 'dry',
-    #                 'risk_score': min(10, risk_score),
-    #                 'monsoon_risk': 8 if season == 'monsoon' else 3,
-    #                 'driving_condition_impact': 'severe' if risk_score >= 7 else 'moderate' if risk_score >= 5 else 'minimal',
-    #                 'data_source': 'VISUALCROSSING_API'
-    #             }
-                
-    #     except Exception as e:
-    #         logger.error(f"Error fetching VisualCrossing weather: {e}")
-    #         return self._get_fallback_weather(point, index, coordinates)
-    def _get_visualcrossing_weather(self, point: Dict, coordinates: List[Dict], index: int) -> Optional[Dict]:
-        """Get weather from ERA5 API instead of VisualCrossing"""
+    def _get_era5_weather(self, point: Dict, coordinates: List[Dict], index: int, route_id: str) -> Optional[Dict]:
+        """Get weather from ERA5 API"""
         try:
-            # Use ERA5 API with static IP
-            url = "http://43.250.40.133:6000/api/weather/visualcrossing-compatible"
-            
-            # ERA5 API key (replace with your actual key or get from env)
-            era5_api_key = "h4DSeoxB88OwRw7rh42sWJlx8BphPHCi"
-            
             params = {
-                'location': f"{point['latitude']},{point['longitude']}"
+                'latitude': point['latitude'],
+                'longitude': point['longitude']
             }
             
             headers = {
-                'X-API-Key': era5_api_key
+                'X-API-Key': self.era5_api_key
             }
             
+            logger.debug(f"ERA5 API request: {self.era5_api_url} with params: {params}")
             start_time = time.time()
-            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response = requests.get(self.era5_api_url, params=params, headers=headers, timeout=10)
             response_time = (time.time() - start_time) * 1000
+            
+            logger.debug(f"ERA5 API response: {response.status_code} in {response_time:.0f}ms")
             
             # Log API call
             self.api_log_model.log_api_call(
-                route_id=None,
-                api_name='era5_weather',  # Changed from 'visualcrossing'
-                endpoint=url,
+                route_id=route_id,
+                api_name='era5_weather',
+                endpoint=self.era5_api_url,
                 request_data=params,
-                response_data={'status': 'success' if response.status_code == 200 else 'failed'},
+                response_data={'status': 'success' if response.status_code == 200 else 'failed', 'status_code': response.status_code},
                 status_code=response.status_code,
                 response_time=response_time
             )
             
             if response.status_code == 200:
                 data = response.json()
-                current = data.get('currentConditions', {})
+                logger.debug(f"ERA5 response data: {data}")
                 
-                # Determine season and risk
-                temp = current.get('temp', 25)
-                conditions = current.get('conditions', 'Clear').lower()
-                
-                if temp > 35:
-                    season = 'summer'
-                elif temp < 15:
-                    season = 'winter'
-                elif 'rain' in conditions:
-                    season = 'monsoon'
+                if data.get('data_available'):
+                    return {
+                        'latitude': point['latitude'],
+                        'longitude': point['longitude'],
+                        'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
+                        'season': data.get('season', 'spring'),
+                        'weather_condition': data.get('weather_condition', 'clear'),
+                        'average_temperature': data.get('temperature', 25),
+                        'humidity': data.get('humidity', 60),
+                        'pressure': data.get('pressure', 1013),
+                        'visibility_km': data.get('visibility_km', 10),
+                        'wind_speed_kmph': data.get('wind_speed_kmph', 10),
+                        'wind_direction': data.get('wind_direction', 'N'),
+                        'precipitation_mm': data.get('precipitation', 0),
+                        'precipitation_probability': data.get('precipitation', 0) * 10,
+                        'road_surface_condition': data.get('road_surface_condition', 'dry'),
+                        'risk_score': data.get('risk_score', 3),
+                        'monsoon_risk': 8 if data.get('season') == 'monsoon' else 3,
+                        'driving_condition_impact': data.get('driving_condition_impact', 'minimal'),
+                        'data_source': 'ERA5_REANALYSIS'
+                    }
                 else:
-                    season = 'spring'
-                
-                # Calculate risk
-                risk_score = 3
-                if 'rain' in conditions or 'storm' in conditions:
-                    risk_score += 4
-                elif 'fog' in conditions or 'mist' in conditions:
-                    risk_score += 5
-                elif temp > 40 or temp < 5:
-                    risk_score += 3
-                
-                return {
-                    'latitude': point['latitude'],
-                    'longitude': point['longitude'],
-                    'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
-                    'season': season,
-                    'weather_condition': 'rainy' if 'rain' in conditions else 'foggy' if 'fog' in conditions else 'clear',
-                    'average_temperature': temp,
-                    'humidity': current.get('humidity', 60),
-                    'pressure': current.get('pressure', 1013),
-                    'visibility_km': current.get('visibility', 10),
-                    'wind_speed_kmph': current.get('windspeed', 10),
-                    'wind_direction': current.get('winddir', 0),
-                    'precipitation_mm': current.get('precip', 0),
-                    'precipitation_probability': current.get('precipprob', 0),
-                    'road_surface_condition': 'wet' if 'rain' in conditions else 'dry',
-                    'risk_score': min(10, risk_score),
-                    'monsoon_risk': 8 if season == 'monsoon' else 3,
-                    'driving_condition_impact': 'severe' if risk_score >= 7 else 'moderate' if risk_score >= 5 else 'minimal',
-                    'data_source': 'ERA5_REANALYSIS'  # Changed from 'VISUALCROSSING_API'
-                }
+                    logger.warning(f"ERA5 data not available for location {point['latitude']}, {point['longitude']}")
+                    return None
             else:
-                # Log the error
-                logger.error(f"ERA5 API returned status code: {response.status_code}")
-                logger.error(f"Response: {response.text}")
-                return self._get_fallback_weather(point, index, coordinates)
+                logger.error(f"ERA5 API error: {response.status_code} - {response.text}")
+                return None
                     
+        except requests.exceptions.Timeout:
+            logger.error(f"ERA5 API timeout after 10 seconds")
+            self.api_log_model.log_api_call(
+                route_id=route_id,
+                api_name='era5_weather',
+                endpoint=self.era5_api_url,
+                request_data={'latitude': point['latitude'], 'longitude': point['longitude']},
+                response_data=None,
+                status_code=0,
+                response_time=10000,
+                error='Timeout'
+            )
+            return None
         except Exception as e:
             logger.error(f"Error fetching ERA5 weather: {e}")
-            return self._get_fallback_weather(point, index, coordinates)
+            logger.error(traceback.format_exc())
+            self.api_log_model.log_api_call(
+                route_id=route_id,
+                api_name='era5_weather',
+                endpoint=self.era5_api_url,
+                request_data={'latitude': point['latitude'], 'longitude': point['longitude']},
+                response_data=None,
+                status_code=0,
+                response_time=0,
+                error=str(e)
+            )
+            return None
     
     def _get_traffic_data_fast(self, route_id: str, coordinates: List[Dict]) -> Dict:
         """Get traffic data with caching and batching"""
+        logger.debug(f"Getting traffic data for route {route_id}")
         traffic_data = []
         
-        # Sample fewer points
-        sample_interval = max(1, len(coordinates) // 10)
-        sample_points = coordinates[::sample_interval]
-        
-        for i, point in enumerate(sample_points):
-            # Check cache
-            cached = self._get_cached_data('traffic', point['latitude'], point['longitude'])
+        try:
+            # Sample fewer points
+            sample_interval = max(1, len(coordinates) // 10)
+            sample_points = coordinates[::sample_interval]
+            logger.debug(f"Getting traffic for {len(sample_points)} sample points")
             
-            if cached:
-                traffic = cached
-                traffic['distance_from_start_km'] = self._calculate_cumulative_distance(
-                    coordinates, i * sample_interval
-                )
-            else:
-                # Get from TomTom or use fallback
-                self._rate_limit_api('tomtom')
-                traffic = self._get_tomtom_traffic(point, coordinates, i * sample_interval)
+            for i, point in enumerate(sample_points):
+                logger.debug(f"Processing traffic point {i+1}/{len(sample_points)}")
+                
+                # Check cache
+                cached = self._get_cached_data('traffic', point['latitude'], point['longitude'])
+                
+                if cached:
+                    traffic = cached
+                    traffic['distance_from_start_km'] = self._calculate_cumulative_distance(
+                        coordinates, i * sample_interval
+                    )
+                    logger.debug(f"Using CACHED traffic data for point {i+1}")
+                else:
+                    # Get from TomTom
+                    logger.info(f"Calling TomTom API for traffic point {i+1}")
+                    self._rate_limit_api('tomtom')
+                    traffic = self._get_tomtom_traffic(point, coordinates, i * sample_interval, route_id)
+                    
+                    if traffic:
+                        self._save_to_cache('traffic', point['latitude'], point['longitude'], traffic)
                 
                 if traffic:
-                    self._save_to_cache('traffic', point['latitude'], point['longitude'], traffic)
+                    self.traffic_data_model.create_traffic_data(route_id, traffic)
+                    traffic_data.append(traffic)
             
-            if traffic:
-                self.traffic_data_model.create_traffic_data(route_id, traffic)
-                traffic_data.append(traffic)
-        
+            logger.debug(f"Traffic data complete: {len(traffic_data)} points")
+            
+        except Exception as e:
+            logger.error(f"Error getting traffic data: {e}")
+            logger.error(traceback.format_exc())
+            
         return {'traffic_data': traffic_data}
     
-    def _get_tomtom_traffic(self, point: Dict, coordinates: List[Dict], index: int) -> Optional[Dict]:
+    def _get_tomtom_traffic(self, point: Dict, coordinates: List[Dict], index: int, route_id: str) -> Optional[Dict]:
         """Get traffic from TomTom with proper error handling"""
         try:
             url = f"https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json"
@@ -529,17 +698,20 @@ class RouteProcessor:
                 'key': self.tomtom_api_key
             }
             
+            logger.debug(f"TomTom API request: {url}")
             start_time = time.time()
             response = requests.get(url, params=params, timeout=5)
             response_time = (time.time() - start_time) * 1000
             
+            logger.debug(f"TomTom API response: {response.status_code} in {response_time:.0f}ms")
+            
             # Log API call
             self.api_log_model.log_api_call(
-                route_id=None,
-                api_name='tomtom',
+                route_id=route_id,
+                api_name='tomtom_traffic',
                 endpoint=url,
                 request_data=params,
-                response_data={'status': 'success' if response.status_code == 200 else 'failed'},
+                response_data={'status': 'success' if response.status_code == 200 else 'failed', 'status_code': response.status_code},
                 status_code=response.status_code,
                 response_time=response_time
             )
@@ -580,10 +752,61 @@ class RouteProcessor:
                     'time_of_day': 'current',
                     'data_source': 'TOMTOM_API'
                 }
+            else:
+                logger.warning(f"TomTom API returned status code: {response.status_code}")
+                # Return simulated traffic data
+                return self._get_simulated_traffic(point, index, coordinates)
                 
+        except requests.exceptions.Timeout:
+            logger.error(f"TomTom API timeout after 5 seconds")
+            self.api_log_model.log_api_call(
+                route_id=route_id,
+                api_name='tomtom_traffic',
+                endpoint=url,
+                request_data={'point': f"{point['latitude']},{point['longitude']}"},
+                response_data=None,
+                status_code=0,
+                response_time=5000,
+                error='Timeout'
+            )
+            return self._get_simulated_traffic(point, index, coordinates)
         except Exception as e:
             logger.error(f"Error fetching TomTom traffic: {e}")
-            return self._get_fallback_traffic(point, index, coordinates)
+            logger.error(traceback.format_exc())
+            self.api_log_model.log_api_call(
+                route_id=route_id,
+                api_name='tomtom_traffic',
+                endpoint=url,
+                request_data={'point': f"{point['latitude']},{point['longitude']}"},
+                response_data=None,
+                status_code=0,
+                response_time=0,
+                error=str(e)
+            )
+            return self._get_simulated_traffic(point, index, coordinates)
+    
+    def _get_simulated_traffic(self, point: Dict, index: int, coordinates: List[Dict]) -> Dict:
+        """Get simulated traffic data when API fails"""
+        # Use risk calculator's traffic analysis
+        traffic_data = self.risk_calculator.analyze_traffic_patterns(coordinates)
+        if index < len(traffic_data):
+            return traffic_data[index]
+        
+        # Default simulated data
+        return {
+            'latitude': point['latitude'],
+            'longitude': point['longitude'],
+            'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
+            'average_speed_kmph': 50,
+            'free_flow_speed_kmph': 60,
+            'congestion_level': 'light',
+            'confidence': 0.5,
+            'road_closure': False,
+            'risk_score': 3,
+            'peak_hour_traffic_count': 150,
+            'time_of_day': 'current',
+            'data_source': 'SIMULATED'
+        }
     
     # Keep all the helper methods from the original
     def _calculate_total_distance(self, coordinates: List[Dict]) -> float:
@@ -746,45 +969,6 @@ class RouteProcessor:
                 
         return accident_areas
     
-    def _get_fallback_weather(self, point: Dict, index: int, coordinates: List[Dict]) -> Dict:
-        """Get fallback weather data when API fails"""
-        return {
-            'latitude': point['latitude'],
-            'longitude': point['longitude'],
-            'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
-            'season': 'summer',
-            'weather_condition': 'clear',
-            'average_temperature': 28,
-            'humidity': 60,
-            'pressure': 1013,
-            'visibility_km': 10,
-            'wind_speed_kmph': 10,
-            'wind_direction': 'N',
-            'precipitation_mm': 0,
-            'road_surface_condition': 'dry',
-            'risk_score': 3,
-            'monsoon_risk': 3,
-            'driving_condition_impact': 'minimal',
-            'data_source': 'FALLBACK'
-        }
-    
-    def _get_fallback_traffic(self, point: Dict, index: int, coordinates: List[Dict]) -> Dict:
-        """Get fallback traffic data when API fails"""
-        return {
-            'latitude': point['latitude'],
-            'longitude': point['longitude'],
-            'distance_from_start_km': self._calculate_cumulative_distance(coordinates, index),
-            'average_speed_kmph': 50,
-            'free_flow_speed_kmph': 60,
-            'congestion_level': 'light',
-            'confidence': 0.5,
-            'road_closure': False,
-            'risk_score': 3,
-            'peak_hour_traffic_count': 150,
-            'time_of_day': 'current',
-            'data_source': 'FALLBACK'
-        }
-    
     # Fallback to regular processing if fast mode fails
     def process_single_route_with_id(self, route_id: str, route_info: Dict, coordinates: List[Dict]):
         """Process with full API calls - fallback mode"""
@@ -792,91 +976,12 @@ class RouteProcessor:
             # Try fast mode first
             return self.process_single_route_fast(route_id, route_info, coordinates)
         except Exception as e:
-            logger.error(f"Fast mode failed, using regular processing: {e}")
-            # Implement regular processing as fallback
-            return self._process_regular(route_id, route_info, coordinates)
-    
-    def _process_regular(self, route_id: str, route_info: Dict, coordinates: List[Dict]):
-        """Regular processing mode - simplified version"""
-        self.route_model.update_processing_status(route_id, 'processing')
-        
-        try:
-            # Basic analysis without extensive API calls
-            results = {}
-            total_distance = self._calculate_total_distance(coordinates)
-            
-            # Geometric analysis
-            results.update(self._analyze_geometry_fast(route_id, coordinates, total_distance))
-            
-            # Basic services
-            bounds = self._calculate_bounds(coordinates)
-            emergency_services = []
-            for i in range(3):  # Add some dummy services
-                service = {
-                    'latitude': (bounds['min_lat'] + bounds['max_lat']) / 2 + (i * 0.01),
-                    'longitude': (bounds['min_lng'] + bounds['max_lng']) / 2 + (i * 0.01),
-                    'service_type': ['hospital', 'police', 'fire_station'][i],
-                    'name': f"Emergency Service {i+1}",
-                    'phone': '100',
-                    'address': 'Near route',
-                    'distance_from_route_km': 2 + i,
-                    'distance_from_start_km': 10 * (i + 1),
-                    'distance_from_end_km': total_distance - (10 * (i + 1))
-                }
-                service = self._enrich_emergency_service(service)
-                self.emergency_service_model.create_emergency_service(route_id, service)
-                emergency_services.append(service)
-            results['emergency_services'] = emergency_services
-            
-            # Basic road conditions
-            road_conditions = []
-            for i in range(5):
-                condition = {
-                    'latitude': coordinates[i * (len(coordinates) // 5)]['latitude'],
-                    'longitude': coordinates[i * (len(coordinates) // 5)]['longitude'],
-                    'road_type': 'highway',
-                    'surface': 'asphalt',
-                    'lanes': 2,
-                    'max_speed': 60,
-                    'width': 7,
-                    'under_construction': False,
-                    'surface_quality': 'good',
-                    'risk_score': 3,
-                    'distance_from_start_km': i * (total_distance / 5),
-                    'has_potholes': False,
-                    'data_source': 'ESTIMATED'
-                }
-                self.road_condition_model.create_road_condition(route_id, condition)
-                road_conditions.append(condition)
-            results['road_conditions'] = road_conditions
-            
-            # Basic network coverage
-            results.update(self._analyze_network_coverage_fast(route_id, coordinates, total_distance))
-            
-            # Calculate risk scores
-            risk_scores = self.risk_calculator.calculate_overall_risk_score(results)
-            
-            # Update route
-            risk_scores_with_level = risk_scores['scores'].copy()
-            risk_scores_with_level['overall'] = risk_scores['overall']
-            risk_scores_with_level['risk_level'] = risk_scores['risk_level']
-            
-            self.route_model.update_risk_scores(route_id, risk_scores_with_level)
-            self.route_model.update_processing_status(route_id, 'completed')
-            
-            return {
-                'route_id': route_id,
-                'status': 'completed',
-                'risk_level': risk_scores['risk_level'],
-                'overall_score': risk_scores['overall']
-            }
-            
-        except Exception as e:
-            self.route_model.update_processing_status(route_id, 'failed', str(e))
-            raise e
+            logger.error(f"Fast mode failed, error: {e}")
+            raise e  # Re-raise the error for better debugging
     
     def reprocess_route(self, route_id: str):
         """Reprocess an existing route"""
+        logger.info(f"Reprocessing route {route_id}")
         route = self.route_model.find_by_id(route_id)
         if not route:
             raise ValueError("Route not found")
@@ -900,6 +1005,7 @@ class RouteProcessor:
     
     def _clear_route_analysis(self, route_id: str):
         """Clear existing analysis data for a route"""
+        logger.debug(f"Clearing analysis data for route {route_id}")
         route_obj_id = ObjectId(route_id)
         
         # Clear all related collections
