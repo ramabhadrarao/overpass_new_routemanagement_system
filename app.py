@@ -757,10 +757,10 @@ def prepare_route_data(route_info, coordinates):
             'latitude': coordinates[-1]['latitude'],
             'longitude': coordinates[-1]['longitude']
         },
-        'from_address': f"{route_info['BU Code']} Location",
-        'fromAddress': f"{route_info['BU Code']} Location",
-        'to_address': f"{route_info['Row Labels']} Location",
-        'toAddress': f"{route_info['Row Labels']} Location",
+        'from_address': route_info.get('Location', ''),  # Use Location column (2nd column)
+        'fromAddress': route_info.get('Location', ''),   # Use Location column (2nd column)
+        'to_address': route_info.get('Customer Name', ''),  # Use Customer Name column (4th column)
+        'toAddress': route_info.get('Customer Name', ''),   # Use Customer Name column (4th column)
         'route_points': coordinates,
         'routePoints': coordinates,
         'total_distance': total_distance,
@@ -769,8 +769,8 @@ def prepare_route_data(route_info, coordinates):
         'totalWaypoints': len(coordinates),
         'estimated_duration': (total_distance / 40) * 60,  # Assuming 40 km/h average
         'estimatedDuration': (total_distance / 40) * 60,
-        'major_highways': ['NH-XX', 'SH-YY'],
-        'majorHighways': ['NH-XX', 'SH-YY'],
+        'major_highways': [],
+        'majorHighways': [],
         'terrain': 'mixed',
         'processing_status': 'pending',
         'created_at': datetime.utcnow(),

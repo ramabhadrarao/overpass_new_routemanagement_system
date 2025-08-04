@@ -19,6 +19,8 @@ import hashlib
 import traceback
 import numpy as np
 from services.weather_service import WeatherService
+from services.highway_extractor import HighwayExtractor
+
 # Configure detailed logging
 logging.basicConfig(
     level=logging.DEBUG,
@@ -46,7 +48,9 @@ class RouteProcessor:
         self.weather_condition_model = WeatherCondition(db)
         self.traffic_data_model = TrafficData(db)
         self.api_log_model = APILog(db)
-        
+        self.highway_extractor = HighwayExtractor(self.overpass_service)
+
+
         # Load API keys
         self.era5_api_key = "h4DSeoxB88OwRw7rh42sWJlx8BphPHCi"
         self.era5_api_url = "http://43.250.40.133:6000/api/weather/point"
@@ -232,7 +236,33 @@ class RouteProcessor:
             except Exception as e:
                 logger.error(f"Traffic data failed: {e}")
                 logger.error(traceback.format_exc())
-            
+            # 7. Extract major highways
+            logger.info("STEP 7/7: Extracting major highways...")
+            try:
+                highway_start = time.time()
+                major_highways = self.highway_extractor.extract_highways_from_route(route_id, coordinates)
+                
+                # Update route with actual highways
+                self.db.routes.update_one(
+                    {'_id': ObjectId(route_id)},
+                    {'$set': {
+                        'majorHighways': major_highways,
+                        'major_highways': major_highways
+                    }}
+                )
+                logger.info(f"Highway extraction completed in {time.time() - highway_start:.2f}s")
+                logger.info(f"Major highways found: {major_highways}")
+            except Exception as e:
+                logger.error(f"Highway extraction failed: {e}")
+                # Use fallback
+                major_highways = self.highway_extractor.extract_highways_simple(coordinates)
+                self.db.routes.update_one(
+                    {'_id': ObjectId(route_id)},
+                    {'$set': {
+                        'majorHighways': major_highways,
+                        'major_highways': major_highways
+                    }}
+                )
             # Calculate risk scores
             logger.info("Calculating risk scores...")
             risk_scores = self.risk_calculator.calculate_overall_risk_score(results)
