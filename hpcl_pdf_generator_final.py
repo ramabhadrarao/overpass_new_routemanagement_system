@@ -92,7 +92,8 @@ class HPCLDynamicPDFGenerator:
         self.colors = HPCLColors()
         self.client = None
         self.db = None
-        
+        #page number counter
+        self.current_page_number = 1
         # PDF Configuration
         self.page_width, self.page_height = A4
         self.margin = 50
@@ -304,6 +305,8 @@ class HPCLDynamicPDFGenerator:
     def add_page_header(self, canvas_obj, title: str, subtitle: str = "",page_num: Optional[int] = None):
         """Add consistent page header"""
         # Header background
+        if page_num is None:
+            page_num = self.current_page_number
         canvas_obj.saveState()
         canvas_obj.setFillColor(self.colors.PRIMARY)
         canvas_obj.rect(0, self.page_height - 60, self.page_width, 60, fill=1)
@@ -318,13 +321,16 @@ class HPCLDynamicPDFGenerator:
             canvas_obj.setFont("Helvetica", 10)
             canvas_obj.drawString(self.margin, self.page_height - 50, subtitle)
 
-        if page_num:
-            canvas_obj.setFont("Helvetica", 10)
-            date_str = datetime.now().strftime('%B %d, %Y')
-            canvas_obj.drawRightString(self.page_width - self.margin, self.page_height - 35, f"Page {page_num}")
-            canvas_obj.drawRightString(self.page_width - self.margin, self.page_height - 50, date_str)
+        
+        canvas_obj.setFont("Helvetica", 10)
+        date_str = datetime.now().strftime('%B %d, %Y')
+        canvas_obj.drawRightString(self.page_width - self.margin, self.page_height - 35, f"Page {page_num}")
+        canvas_obj.drawRightString(self.page_width - self.margin, self.page_height - 50, date_str)
         canvas_obj.restoreState()
-
+    def show_new_page(self, canvas_obj):
+        """Show new page and increment page counter"""
+        canvas_obj.showPage()
+        self.current_page_number += 1
     def add_logo(self, canvas_obj):
         """Add HPCL logo"""
         try:
@@ -2015,10 +2021,10 @@ class HPCLDynamicPDFGenerator:
             second_col_y -= line_height
             canvas_obj.setFont("Helvetica-Bold", 9)
 
-    def create_safety_measures_page(self, canvas_obj, route_data: Dict[str, Any],page_num: int):
+    def create_safety_measures_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create separate page for Key Safety Measures & Regulatory Compliance"""
         # Page header
-        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)", "", page_num)
+        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)", "")
         
         y_pos = self.page_height - 100
 
@@ -2212,13 +2218,13 @@ class HPCLDynamicPDFGenerator:
     # MAIN METHOD - Entry point for creating the comprehensive risk zones page
     # ============================================================================
 
-    def create_comprehensive_risk_zones_page(self, canvas_obj, route_data: Dict[str, Any], page_num: int):
+    def create_comprehensive_risk_zones_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create comprehensive High-Risk Zones page with all risk categories in ONE table"""
         collections = route_data['collections']
         route = route_data['route']
         
         # Page header
-        self.add_page_header(canvas_obj,"HPCL - Journey Risk Management Study (AI-Powered Analysis)", "", page_num )
+        self.add_page_header(canvas_obj,"HPCL - Journey Risk Management Study (AI-Powered Analysis)", "")
         # self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "Safety & Compliance", page_num)
 
         y_pos = self.page_height - 100
@@ -2641,7 +2647,7 @@ class HPCLDynamicPDFGenerator:
             # Check if we need a new page or draw headers
             if not headers_drawn or current_y < 120:
                 if row_idx > 0:  # Not the first page
-                    canvas_obj.showPage()
+                    self.show_new_page(canvas_obj)
                     self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
                     current_y = self.page_height - 120
                     page_number += 1
@@ -3026,7 +3032,7 @@ class HPCLDynamicPDFGenerator:
         # Weather-related accident-prone areas
         y_pos -= 40
         if y_pos < 300:
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
 
@@ -3101,7 +3107,7 @@ class HPCLDynamicPDFGenerator:
         
         # Check if we need a new page for blind spots
         if y_pos < 300:  # If less than 300px left, start new page
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HIGH-RISK ZONES & KEY RISK POINTS", "Blind spots analysis")
             y_pos = self.page_height - 120
         else:
@@ -3199,7 +3205,7 @@ class HPCLDynamicPDFGenerator:
 
         while current_row_index < len(data):
             if not first_chunk:
-                canvas_obj.showPage()
+                self.show_new_page(canvas_obj)
                 self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)", "Continued from previous page")
                 current_y = self.page_height - 120
 
@@ -3350,7 +3356,7 @@ class HPCLDynamicPDFGenerator:
         first_chunk = True
         for chunk_index, chunk_data in enumerate(data_chunks):
             if not first_chunk:
-                canvas_obj.showPage()
+                self.show_new_page(canvas_obj)
                 self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)", "Continued from previous page")
                 current_y = self.page_height - 120
 
@@ -3589,7 +3595,7 @@ class HPCLDynamicPDFGenerator:
         
         # Check if we need a new page for fire stations
         if y_pos < 150:
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
         else:
@@ -3635,7 +3641,7 @@ class HPCLDynamicPDFGenerator:
         
         # Check if we need a new page for FUEL STATIONS
         if y_pos < 150: 
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis) ")
             y_pos = self.page_height - 120
         else:
@@ -3680,7 +3686,7 @@ class HPCLDynamicPDFGenerator:
 
         # Check if we need a new page for Education stations
         if y_pos < 150:  # If less than 300px left, start new page
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis) ")
             y_pos = self.page_height - 120
         else:
@@ -3725,7 +3731,7 @@ class HPCLDynamicPDFGenerator:
             )
         # Check if we need a new page for Food Stations
         if y_pos < 150:  # If less than 300px left, start new page
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis) ")
             y_pos = self.page_height - 120
         else:
@@ -3776,7 +3782,7 @@ class HPCLDynamicPDFGenerator:
 
         # NOTES - GENERAL EMERGENCY GUIDELINES FOR PETROLEUM TANKER (Static content)
         if y_pos < 300: 
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "GENERAL EMERGENCY GUIDELINES")
             y_pos = self.page_height - 120
 
@@ -3939,7 +3945,7 @@ class HPCLDynamicPDFGenerator:
             return f"{base_rec}, avoid travel during peak conditions"
         return base_rec
 
-    def create_network_coverage_page(self, canvas_obj, route_data: Dict[str, Any], page_num: int):
+    def create_network_coverage_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create Page 8: Network Coverage with auto-paginated tables"""
         collections = route_data['collections']
         
@@ -4057,7 +4063,7 @@ class HPCLDynamicPDFGenerator:
                 # Communication recommendations (always fits on one page)
             
             if y_pos < 200:  
-                canvas_obj.showPage()
+                self.show_new_page(canvas_obj)
                 self.add_page_header(canvas_obj, "EMERGENCY COMMUNICATION PLAN", "Communication recommendations")
                 y_pos = self.page_height - 120
             else:
@@ -4097,7 +4103,7 @@ class HPCLDynamicPDFGenerator:
                 )
 
         if y_pos < 200:  
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
         else:
@@ -4116,7 +4122,7 @@ class HPCLDynamicPDFGenerator:
         )
         # Communication recommendations (always fits on one page)
         if y_pos < 200:  
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
         else:
@@ -4268,7 +4274,7 @@ class HPCLDynamicPDFGenerator:
         for i, turn in enumerate(high_risk_turns[:10]):  # Limit to top 10
             self.create_single_sharp_turn_page(canvas_obj, turn, i + 1, route_id, route_data)
             if i < len(high_risk_turns) - 1:
-                canvas_obj.showPage()
+                self.show_new_page(canvas_obj)
 
     def create_single_sharp_turn_page(self, canvas_obj, turn: Dict, turn_number: int, 
                                     route_id: str, route_data: Dict):
@@ -4351,7 +4357,7 @@ class HPCLDynamicPDFGenerator:
 
         for index, row in enumerate(data):
             if current_y < page_bottom_margin:
-                canvas_obj.showPage()
+                self.show_new_page(canvas_obj)
                 current_y = start_y
 
             param, value = row
@@ -4673,7 +4679,7 @@ class HPCLDynamicPDFGenerator:
         # Sharp Turns Detailed Pages
         logger.info("Generating Blind Spot Analysis static Pages")
         self.create_blind_spots_analysis_page(pdf_canvas, route_data)
-        pdf_canvas.showPage()
+        self.show_new_page(pdf_canvas)
         
         # Blind Spots Detailed Pages (similar implementation)
         logger.info("Generating Detailed Blind Spot Analysis Pages")
@@ -4682,7 +4688,7 @@ class HPCLDynamicPDFGenerator:
         # Page: Generating Pages: sharp turns analysis Page)
         logger.info("📄 Generating Pages: sharp turns analysis Page")
         self.create_sharp_turns_analysis_page(pdf_canvas, route_data)
-        pdf_canvas.showPage()
+        self.show_new_page(pdf_canvas)
 
         # Sharp Turns Detailed Pages
         logger.info("Generating Detailed Sharp Turn Analysis Pages")
@@ -4716,7 +4722,7 @@ class HPCLDynamicPDFGenerator:
         for i, spot in enumerate(high_risk_spots[:10]):  # Limit to top 10
             self.create_single_blind_spot_page(canvas_obj, spot, i + 1, route_id, route_data)
             if i < len(high_risk_spots) - 1:
-                canvas_obj.showPage()
+                self.show_new_page(canvas_obj)
 
     def create_single_blind_spot_page(self, canvas_obj, spot: Dict, spot_number: int, 
                                     route_id: str, route_data: Dict):
@@ -5224,7 +5230,7 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 30
         
         if y_pos < 250:  # Check if we need a new page
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
         
@@ -5549,29 +5555,29 @@ class HPCLDynamicPDFGenerator:
     def translate_to_english(self, text: str) -> str:
         """Translate text to English if needed"""
         if not text or not isinstance(text, str):
-            return text
+            return str(text) if text else ""
         
-        # Check if text is already in English (basic check)
+        # If text is already in English (basic check)
         try:
-            # If all characters are ASCII, likely already English
             text.encode('ascii')
             return text
         except UnicodeEncodeError:
-            # Text contains non-ASCII characters, might need translation
             pass
         
-        # Try to translate using googletrans
-        if self.translator:
-            try:
-                # Detect language and translate if not English
+        # Skip translation if translator is not available
+        if not hasattr(self, 'translator') or self.translator is None:
+            return text
+        
+        try:
+            # Try to translate
+            if self.translator:
                 detected = self.translator.detect(text)
-                if detected.lang != 'en':
+                if detected.lang != 'en' and detected.confidence > 0.5:
                     translated = self.translator.translate(text, dest='en')
                     return translated.text
-            except Exception as e:
-                logger.warning(f"Translation failed for '{text}': {e}")
+        except Exception as e:
+            logger.warning(f"Translation skipped for '{text}': {str(e)}")
         
-        # Fallback: return original text if translation fails
         return text
 
     def draw_title_bullet_section(self, canvas_obj, title:str, bullets: List[str], y, title_color = None):
@@ -5621,7 +5627,7 @@ class HPCLDynamicPDFGenerator:
     def check_page_space(self, y_pos, canvas_obj, min_y=80):
         """Page: Comprehensive Environmental Assessment"""
         if y_pos < min_y:
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(
                 canvas_obj,
                 "HPCL - Journey Risk Management Study (AI-Powered Analysis)"
@@ -5780,7 +5786,7 @@ class HPCLDynamicPDFGenerator:
         # Final footer (optional)
         y_pos = self.check_page_space(y_pos, canvas_obj)
         canvas_obj.setFillColorRGB(0.7, 0.7, 0.7)
-        canvas_obj.setFont("Helvetica-Bold", 10)
+        canvas_obj.setFont("Helvetica-Bold", 8)
         disclaimer = "CONFIDENTIAL - For Internal Use Only. Generated by HPCL Journey Risk Management System with AI-Enhanced Analysis"
         disclaimer_width = canvas_obj.stringWidth(disclaimer, "Helvetica-Oblique", 8)
         canvas_obj.drawString((self.page_width - disclaimer_width) / 2, 60, disclaimer)
@@ -5870,7 +5876,7 @@ class HPCLDynamicPDFGenerator:
 
         y_pos -= 40
         if y_pos < 300: # Check for page break
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             # self.add_page_header(canvas_obj, "SHARP TURN CLASSIFICATION SYSTEM", "")
             y_pos = self.page_height - 120
 
@@ -5923,7 +5929,7 @@ class HPCLDynamicPDFGenerator:
             if sharp_data:
                 y_pos -= 40
                 if y_pos < 200:
-                    canvas_obj.showPage()
+                    self.show_new_page(canvas_obj)
                     self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)", "")
                     y_pos = self.page_height - 120
 
@@ -6087,7 +6093,7 @@ class HPCLDynamicPDFGenerator:
         # BLIND SPOT CLASSIFICATION SYSTEM
         y_pos -= 40
         if y_pos < 300: # Check for page break
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "BLIND SPOT CLASSIFICATION SYSTEM", "")
             y_pos = self.page_height - 120
             
@@ -6119,7 +6125,7 @@ class HPCLDynamicPDFGenerator:
 
         y_pos -= 40
         if y_pos < 300: # Check for page break
-            canvas_obj.showPage()
+            self.show_new_page(canvas_obj)
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
 
@@ -6270,7 +6276,7 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 20
         if accident_prons:
             if y_pos < 200:
-                canvas_obj.showPage()
+                self.show_new_page(canvas_obj)
                 self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
                 y_pos = self.page_height - 120
             headers = ["Location (GPS)","Link", "Risk Level", "Severity"]
@@ -6786,87 +6792,87 @@ class HPCLDynamicPDFGenerator:
             
             pdf_canvas = canvas.Canvas(output_path, pagesize=A4)
             pdf_canvas.setTitle(f"HPCL Route Analysis - {route_name}")
-            page_num = 1
-            
+            # page_num = 1
+            self.current_page_number = 1
             # Page 1: Title Page
             logger.info("📄 Generating Page 1: Title Page")
             self.create_title_page(pdf_canvas, route_data)
-            pdf_canvas.showPage(); page_num += 1
+            self.show_new_page(pdf_canvas); 
             
             # Page 2: Executive Summary & Risk Overview
             logger.info("📄 Generating Page 2: Executive Summary")
             self.create_executive_summary_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
             
             # Page 3: Route Map with Google Maps
             logger.info("📄 Generating Page 3: Route Map")
             self.create_route_map_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
             
             # Page 4: Safety Measures & Regulatory Compliance
             logger.info("📄 Generating Page 4: Safety Measures & Compliance")
-            self.create_safety_measures_page(pdf_canvas, route_data, page_num)
-            pdf_canvas.showPage(); page_num += 1
+            self.create_safety_measures_page(pdf_canvas, route_data)
+            self.show_new_page(pdf_canvas); 
 
             # Page 5+: HIGH-RISK ZONES (Comprehensive with all categories)
             logger.info("📄 Generating Pages 5+: Comprehensive High-Risk Zones")
-            self.create_comprehensive_risk_zones_page(pdf_canvas, route_data, page_num)
-            pdf_canvas.showPage();  page_num += 1
+            self.create_comprehensive_risk_zones_page(pdf_canvas, route_data)
+            self.show_new_page(pdf_canvas);  
 
             # Page X: Seasonal Road Conditions
             logger.info("📄 Generating Seasonal Road Conditions")
             self.create_seasonal_road_conditions_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
             
             # Page X+1: Emergency Services - Medical Facilities
             logger.info("📄 Generating Medical Facilities")
             self.create_medical_facilities_page(pdf_canvas, route_data,)
-            pdf_canvas.showPage(); 
+            self.show_new_page(pdf_canvas); 
             
             # Page X+2: Emergency Services - Law Enforcement, Fire, educational, fuel and food
             logger.info("📄 Generating Law Enforcement ,Fire ServicesFire, educational, fuel and food")
             self.create_law_enforcement_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
             
             # Page: GENERAL ENVIRONMENTAL & LOCAL DRIVING GUIDELINES FOR PETROLEUM TANKER DRIVERS
             logger.info("📄 GENERAL ENVIRONMENTAL & LOCAL DRIVING GUIDELINES FOR PETROLEUM TANKER DRIVERS (static content)")
             self.create_general_env_local_driving_guidelines_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Page X+2: DEFENSIVE DRIVING & DRIVER WELL-BEING (static content)
             logger.info("📄 DEFENSIVE DRIVING & DRIVER WELL-BEING (static content)")
             self.deffensive_driving_and_driver_wellbeing(pdf_canvas)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Final Page: Sharp Turn 
             logger.info("📄 Generating Sharp turns")
             self.add_detailed_risk_analysis_pages(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Page 5+: ACCIDENT PRONE TURNS ZONES ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk
             logger.info("📄 Generating Pages : ACCIDENT PRONE TURNS ZONES ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk")
             self.create_accident_prone_turns_zones_analysis_with_dual_visual(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Final Page: Critical Service Gaps Identified
             logger.info("📄 Generating Critical Service Gaps Identified")
             self.create_critical_service_gap_identified(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
             
             # Page X+4: Network Coverage & Communication
             logger.info("📄 Generating Network Coverage")
-            self.create_network_coverage_page(pdf_canvas, route_data,page_num )
-            pdf_canvas.showPage(); page_num += 1
+            self.create_network_coverage_page(pdf_canvas, route_data)
+            self.show_new_page(pdf_canvas); 
             
             # Page: Weather Analysis
             logger.info("📄 Generating Weather Analysis")
             self.create_weather_analysis_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Page X+6: Regulatory Compliance
             logger.info("📄 Generating Regulatory Compliance")
             self.create_regulatory_compliance_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Final Page: Compliance Issues
             logger.info("📄 Generating Compliance Issues")
@@ -6875,44 +6881,44 @@ class HPCLDynamicPDFGenerator:
             y_pos = self.add_applicable_regulatory_framework(pdf_canvas, y_pos)
             y_pos = self.add_compliance_recommendations(pdf_canvas, y_pos)
             y_pos = self.add_non_compliance_penalties(pdf_canvas, y_pos)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
 
             # Final Page: Elevation Terrain Analysis
             logger.info("📄 Generating Elevation Terrain Analysis")
             self.create_elevation_terrain_analysis_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Final Page: Elevation Based Driving Challenges
             logger.info("📄 Generating Elevation Based Driving Challenges")
             self.create_elevation_based_driving_challenges_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             
             # Final Page: Traffic Analysis
             logger.info("📄 Generating Traffic Analysis")
             self.create_traffic_analysis_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Final Page: COMPREHENSIVE ROAD QUALITY & SURFACE CONDITIONS 
             logger.info("📄 COMPREHENSIVE ROAD QUALITY & SURFACE CONDITIONS ")
             self.create_road_quality_and_surface_conditions(pdf_canvas,route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # NEW PAGE: Comprehensive Environmental Assessment
             logger.info("📄 Generating Comprehensive Environmental Assessment")
             self.create_comprehensive_environmental_assessment_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Final Page: Emergency Preparedness & Guidelines
             logger.info("📄 Generating Emergency Guidelines")
             self.create_emergency_guidelines_page(pdf_canvas, route_data)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
 
             # Final Page:Emergency Situation Standard Operating Procedure (SOP)  
             logger.info("📄 final page: Emergency Situation Standard Operating Procedure")
             self.create_emergency_sop_section(pdf_canvas)
-            pdf_canvas.showPage()
+            self.show_new_page(pdf_canvas)
             
             # Save the PDF
             pdf_canvas.save()
