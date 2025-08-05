@@ -62,8 +62,62 @@
                 </div>
             </div>
             <div class="card-body">
+                <!-- Filter Form -->
+                <form method="GET" action="{{ url_for('dashboard') }}" id="filterForm">
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label for="from_code" class="form-label">Filter by From Location:</label>
+                            <select name="from_code" id="from_code" class="form-select">
+                                <option value="">All Locations</option>
+                                {% for code, display_name in from_locations.items()|sort(attribute='1') %}
+                                    <option value="{{ code }}" {% if filters.from_code == code %}selected{% endif %}>
+                                        {{ display_name }}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="status" class="form-label">Filter by Status:</label>
+                            <select name="status" id="status" class="form-select">
+                                <option value="">All Status</option>
+                                <option value="completed" {% if filters.status == 'completed' %}selected{% endif %}>Completed</option>
+                                <option value="processing" {% if filters.status == 'processing' %}selected{% endif %}>Processing</option>
+                                <option value="pending" {% if filters.status == 'pending' %}selected{% endif %}>Pending</option>
+                                <option value="failed" {% if filters.status == 'failed' %}selected{% endif %}>Failed</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="risk_level" class="form-label">Filter by Risk Level:</label>
+                            <select name="risk_level" id="risk_level" class="form-select">
+                                <option value="">All Risk Levels</option>
+                                <option value="CRITICAL" {% if filters.risk_level == 'CRITICAL' %}selected{% endif %}>Critical</option>
+                                <option value="HIGH" {% if filters.risk_level == 'HIGH' %}selected{% endif %}>High</option>
+                                <option value="MEDIUM" {% if filters.risk_level == 'MEDIUM' %}selected{% endif %}>Medium</option>
+                                <option value="LOW" {% if filters.risk_level == 'LOW' %}selected{% endif %}>Low</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-filter"></i> Apply Filters
+                            </button>
+                            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+                                <i class="fas fa-times"></i> Clear Filters
+                            </a>
+                        </div>
+                    </div>
+                </form>
+                
+                <!-- Summary Stats for Filtered Data -->
+                {% if filters.from_code or filters.status or filters.risk_level %}
+                <div class="alert alert-info">
+                    <i class="fas fa-info-circle"></i> Showing filtered results: {{ stats.total }} routes found
+                </div>
+                {% endif %}
+                
                 <div class="table-responsive">
-                    <table class="table table-hover">
+                    <table class="table table-hover" id="routesTable">
                         <thead>
                             <tr>
                                 <th>
@@ -81,7 +135,7 @@
                         </thead>
                         <tbody>
                             {% for route in routes %}
-                            <tr>
+                            <tr class="route-row">
                                 <td>
                                     <input type="checkbox" class="route-checkbox" value="{{ route._id }}">
                                 </td>
@@ -166,25 +220,70 @@
                 <div class="text-center py-5">
                     <i class="fas fa-route fa-3x text-muted mb-3"></i>
                     <h5 class="text-muted">No routes found</h5>
-                    <p class="text-muted">Upload a CSV file to get started</p>
+                    <p class="text-muted">
+                        {% if filters.from_code or filters.status or filters.risk_level %}
+                            Try adjusting your filters or
+                            <a href="{{ url_for('dashboard') }}">clear all filters</a>
+                        {% else %}
+                            Upload a CSV file to get started
+                        {% endif %}
+                    </p>
+                    {% if not (filters.from_code or filters.status or filters.risk_level) %}
                     <a href="{{ url_for('upload') }}" class="btn btn-primary">
                         <i class="fas fa-upload"></i> Upload Routes
                     </a>
+                    {% endif %}
                 </div>
                 {% endif %}
                 
                 <!-- Pagination -->
-                {% if stats.total > 20 %}
+                {% if total_pages > 1 %}
                 <nav aria-label="Route pagination">
                     <ul class="pagination justify-content-center">
+                        <!-- Previous -->
                         <li class="page-item {% if page == 1 %}disabled{% endif %}">
-                            <a class="page-link" href="{{ url_for('dashboard', page=page-1) }}">Previous</a>
+                            <a class="page-link" href="{{ url_for('dashboard', page=page-1, from_code=filters.from_code, status=filters.status, risk_level=filters.risk_level) }}">
+                                Previous
+                            </a>
                         </li>
-                        <li class="page-item active">
-                            <span class="page-link">Page {{ page }}</span>
+                        
+                        <!-- Page numbers -->
+                        {% set start_page = 1 if (page - 2) < 1 else (page - 2) %}
+                        {% set end_page = total_pages if (page + 2) > total_pages else (page + 2) %}
+                        
+                        {% if start_page > 1 %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('dashboard', page=1, from_code=filters.from_code, status=filters.status, risk_level=filters.risk_level) }}">1</a>
                         </li>
-                        <li class="page-item {% if routes|length < 20 %}disabled{% endif %}">
-                            <a class="page-link" href="{{ url_for('dashboard', page=page+1) }}">Next</a>
+                        {% if start_page > 2 %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                        {% endif %}
+                        {% endif %}
+                        
+                        {% for p in range(start_page, end_page + 1) %}
+                        <li class="page-item {% if p == page %}active{% endif %}">
+                            <a class="page-link" href="{{ url_for('dashboard', page=p, from_code=filters.from_code, status=filters.status, risk_level=filters.risk_level) }}">
+                                {{ p }}
+                            </a>
+                        </li>
+                        {% endfor %}
+                        
+                        {% if end_page < total_pages %}
+                        {% if end_page < total_pages - 1 %}
+                        <li class="page-item disabled"><span class="page-link">...</span></li>
+                        {% endif %}
+                        <li class="page-item">
+                            <a class="page-link" href="{{ url_for('dashboard', page=total_pages, from_code=filters.from_code, status=filters.status, risk_level=filters.risk_level) }}">
+                                {{ total_pages }}
+                            </a>
+                        </li>
+                        {% endif %}
+                        
+                        <!-- Next -->
+                        <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+                            <a class="page-link" href="{{ url_for('dashboard', page=page+1, from_code=filters.from_code, status=filters.status, risk_level=filters.risk_level) }}">
+                                Next
+                            </a>
                         </li>
                     </ul>
                 </nav>
@@ -220,6 +319,11 @@
 $(document).ready(function() {
     let routeToDelete = null;
     let selectedRoutes = [];
+    
+    // Auto-submit form when filters change
+    $('#from_code, #status, #risk_level').on('change', function() {
+        $('#filterForm').submit();
+    });
     
     // Handle delete button click
     $('.delete-btn').on('click', function() {
@@ -286,6 +390,7 @@ $(document).ready(function() {
         
         if (selectedRoutes.length > 0) {
             $('#deleteSelectedBtn').show();
+            $('#deleteSelectedBtn').html(`<i class="fas fa-trash"></i> Delete Selected (${selectedRoutes.length})`);
         } else {
             $('#deleteSelectedBtn').hide();
         }

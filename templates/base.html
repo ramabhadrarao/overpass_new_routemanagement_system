@@ -47,8 +47,19 @@
                            data-bs-toggle="dropdown">
                             <i class="fas fa-user"></i> {{ current_user.username }}
                         </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="#">Profile</a></li>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('profile') }}">
+                                    <i class="fas fa-user-circle"></i> Profile
+                                </a>
+                            </li>
+                            {% if current_user.role == 'admin' %}
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('profile') }}#database-management">
+                                    <i class="fas fa-database"></i> Database Backup
+                                </a>
+                            </li>
+                            {% endif %}
                             <li><hr class="dropdown-divider"></li>
                             <li>
                                 <a class="dropdown-item" href="{{ url_for('logout') }}">

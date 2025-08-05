@@ -21,7 +21,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import time
 import math
-
+import zipfile
+import tempfile
+import subprocess
+import shutil
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -135,16 +138,383 @@ def logout():
     flash('You have been logged out.', 'info')
     return redirect(url_for('login'))
 
+# @app.route('/dashboard')
+# @login_required
+# def dashboard():
+#     # Get routes with pagination
+#     page = request.args.get('page', 1, type=int)
+#     per_page = 20
+    
+#     # Get all routes with proper field conversion
+#     skip = (page - 1) * per_page
+#     routes_cursor = db.routes.find().sort('created_at', -1).skip(skip).limit(per_page)
+#     routes = []
+    
+#     for route in routes_cursor:
+#         # Ensure all fields are properly formatted
+#         route_data = {
+#             '_id': str(route['_id']),
+#             'routeName': route.get('routeName') or route.get('route_name', 'N/A'),
+#             'fromCode': route.get('fromCode') or route.get('from_code', ''),
+#             'toCode': route.get('toCode') or route.get('to_code', ''),
+#             'fromAddress': route.get('fromAddress') or route.get('from_address', ''),
+#             'toAddress': route.get('toAddress') or route.get('to_address', ''),
+#             'totalDistance': route.get('totalDistance') or route.get('total_distance', 0),
+#             'estimatedDuration': route.get('estimatedDuration') or route.get('estimated_duration', 0),
+#             'processing_status': route.get('processing_status', 'pending'),
+#             'pdf_generated': route.get('pdf_generated', False),
+#             'risk_scores': route.get('risk_scores', {})
+#         }
+#         routes.append(route_data)
+    
+#     # Get statistics
+#     total_routes = db.routes.count_documents({})
+#     processed_routes = db.routes.count_documents({'processing_status': 'completed'})
+#     pending_routes = db.routes.count_documents({'processing_status': 'pending'})
+#     failed_routes = db.routes.count_documents({'processing_status': 'failed'})
+    
+#     stats = {
+#         'total': total_routes,
+#         'processed': processed_routes,
+#         'pending': pending_routes,
+#         'failed': failed_routes
+#     }
+    
+#     return render_template('dashboard.html', routes=routes, stats=stats, page=page)
+@app.route('/profile')
+@login_required
+def profile():
+    """User profile page"""
+    user = user_model.find_by_id(current_user.id)
+    if not user:
+        flash('User not found', 'danger')
+        return redirect(url_for('dashboard'))
+    
+    # Get user statistics
+    user_stats = {
+        'total_routes': db.routes.count_documents({}),
+        'last_login': user.get('last_login', 'Never'),
+        'created_at': user.get('created_at', datetime.utcnow()),
+        'role': user.get('role', 'user')
+    }
+    
+    return render_template('profile.html', user=user, stats=user_stats)
+
+@app.route('/profile/change-password', methods=['POST'])
+@login_required
+def change_password():
+    """Change user password"""
+    current_password = request.form.get('current_password')
+    new_password = request.form.get('new_password')
+    confirm_password = request.form.get('confirm_password')
+    
+    # Validate inputs
+    if not all([current_password, new_password, confirm_password]):
+        flash('All fields are required', 'danger')
+        return redirect(url_for('profile'))
+    
+    # Check if new passwords match
+    if new_password != confirm_password:
+        flash('New passwords do not match', 'danger')
+        return redirect(url_for('profile'))
+    
+    # Check password length
+    if len(new_password) < 6:
+        flash('Password must be at least 6 characters long', 'danger')
+        return redirect(url_for('profile'))
+    
+    # Verify current password
+    user = user_model.find_by_id(current_user.id)
+    if not user_model.verify_password(user, current_password):
+        flash('Current password is incorrect', 'danger')
+        return redirect(url_for('profile'))
+    
+    # Update password using the same method as user creation
+    # Import bcrypt here if needed, or use the user model's method
+    try:
+        # Since user.py already imports bcrypt, we can import it here too
+        import bcrypt
+        hashed_password = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+        
+        db.users.update_one(
+            {'_id': ObjectId(current_user.id)},
+            {
+                '$set': {
+                    'password': hashed_password,
+                    'updated_at': datetime.utcnow()
+                }
+            }
+        )
+        
+        flash('Password changed successfully', 'success')
+        logger.info(f"Password changed for user: {current_user.username}")
+        
+    except ImportError:
+        # If bcrypt is not available, show error
+        flash('Password encryption module not available. Please contact administrator.', 'danger')
+        logger.error("bcrypt module not found")
+    except Exception as e:
+        flash(f'Error changing password: {str(e)}', 'danger')
+        logger.error(f"Password change error: {str(e)}")
+    
+    return redirect(url_for('profile'))
+
+@app.route('/backup/database')
+@login_required
+def backup_database():
+    """Create a complete database backup"""
+    # Check if user is admin
+    if current_user.role != 'admin':
+        flash('Only administrators can create database backups', 'danger')
+        return redirect(url_for('profile'))
+    
+    try:
+        # Create a temporary directory for the backup
+        with tempfile.TemporaryDirectory() as temp_dir:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_name = f"route_management_backup_{timestamp}"
+            backup_path = os.path.join(temp_dir, backup_name)
+            
+            # Get database name from MongoDB URI
+            db_name = client.get_database().name
+            
+            # Create backup using mongodump
+            try:
+                # Try to use mongodump command
+                subprocess.run([
+                    'mongodump',
+                    '--uri', app.config['MONGODB_URI'],
+                    '--out', backup_path
+                ], check=True, capture_output=True)
+                
+                logger.info(f"Database backup created using mongodump: {backup_name}")
+                
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                # Fallback: Manual export if mongodump is not available
+                logger.warning("mongodump not available, using manual export")
+                
+                # Create backup directory
+                os.makedirs(backup_path, exist_ok=True)
+                db_backup_path = os.path.join(backup_path, db_name)
+                os.makedirs(db_backup_path, exist_ok=True)
+                
+                # Export each collection to JSON
+                collections = [
+                    'users', 'routes', 'sharpturns', 'blindspots', 
+                    'accidentproneareas', 'emergencyservices', 'roadconditions',
+                    'networkcoverages', 'ecosensitivezones', 'weatherconditions',
+                    'trafficdata', 'api_logs', 'api_cache'
+                ]
+                
+                for collection_name in collections:
+                    if collection_name in db.list_collection_names():
+                        collection_data = []
+                        for doc in db[collection_name].find():
+                            # Convert ObjectId to string for JSON serialization
+                            doc['_id'] = str(doc['_id'])
+                            # Convert other ObjectId fields
+                            for key, value in doc.items():
+                                if hasattr(value, '__class__') and value.__class__.__name__ == 'ObjectId':
+                                    doc[key] = str(value)
+                                # Handle datetime objects
+                                elif isinstance(value, datetime):
+                                    doc[key] = value.isoformat()
+                            collection_data.append(doc)
+                        
+                        # Save to JSON file
+                        json_path = os.path.join(db_backup_path, f"{collection_name}.json")
+                        with open(json_path, 'w') as f:
+                            json.dump(collection_data, f, indent=2, default=str)
+                
+                # Add metadata
+                metadata = {
+                    'backup_date': datetime.utcnow().isoformat(),
+                    'database_name': db_name,
+                    'collections': collections,
+                    'backup_method': 'json_export',
+                    'created_by': current_user.username
+                }
+                
+                with open(os.path.join(backup_path, 'metadata.json'), 'w') as f:
+                    json.dump(metadata, f, indent=2)
+            
+            # Create ZIP file
+            zip_path = os.path.join(temp_dir, f"{backup_name}.zip")
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(backup_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, temp_dir)
+                        zipf.write(file_path, arcname)
+            
+            # Log backup creation
+            api_log_model.log_api_call(
+                route_id=None,
+                api_name='database_backup',
+                endpoint='/backup/database',
+                request_data={'user': current_user.username},
+                response_data={'backup_name': backup_name, 'size': os.path.getsize(zip_path)},
+                status_code=200,
+                response_time=0
+            )
+            
+            # Send the file
+            return send_file(
+                zip_path,
+                mimetype='application/zip',
+                as_attachment=True,
+                download_name=f"{backup_name}.zip"
+            )
+            
+    except Exception as e:
+        logger.error(f"Database backup error: {str(e)}")
+        flash(f'Error creating backup: {str(e)}', 'danger')
+        return redirect(url_for('profile'))
+
+@app.route('/backup/restore', methods=['GET', 'POST'])
+@login_required
+def restore_database():
+    """Restore database from backup (admin only)"""
+    if current_user.role != 'admin':
+        flash('Only administrators can restore database backups', 'danger')
+        return redirect(url_for('profile'))
+    
+    if request.method == 'POST':
+        if 'backup_file' not in request.files:
+            flash('No file selected', 'danger')
+            return redirect(url_for('restore_database'))
+        
+        file = request.files['backup_file']
+        if file.filename == '':
+            flash('No file selected', 'danger')
+            return redirect(url_for('restore_database'))
+        
+        if not file.filename.endswith('.zip'):
+            flash('Please upload a valid backup ZIP file', 'danger')
+            return redirect(url_for('restore_database'))
+        
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save uploaded file
+                zip_path = os.path.join(temp_dir, 'backup.zip')
+                file.save(zip_path)
+                
+                # Extract ZIP
+                extract_path = os.path.join(temp_dir, 'extracted')
+                with zipfile.ZipFile(zip_path, 'r') as zipf:
+                    zipf.extractall(extract_path)
+                
+                # Find the backup directory
+                backup_dirs = [d for d in os.listdir(extract_path) if d.startswith('route_management_backup_')]
+                if not backup_dirs:
+                    flash('Invalid backup file structure', 'danger')
+                    return redirect(url_for('restore_database'))
+                
+                backup_dir = os.path.join(extract_path, backup_dirs[0])
+                
+                # Check for metadata
+                metadata_path = os.path.join(backup_dir, 'metadata.json')
+                if os.path.exists(metadata_path):
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    # Restore from JSON files
+                    db_backup_dir = os.path.join(backup_dir, metadata['database_name'])
+                    
+                    if os.path.exists(db_backup_dir):
+                        # Clear existing collections (optional - you might want to create a backup first)
+                        if request.form.get('clear_existing') == 'on':
+                            for collection_name in metadata['collections']:
+                                if collection_name in db.list_collection_names():
+                                    db[collection_name].delete_many({})
+                        
+                        # Restore each collection
+                        for json_file in os.listdir(db_backup_dir):
+                            if json_file.endswith('.json'):
+                                collection_name = json_file[:-5]  # Remove .json extension
+                                json_path = os.path.join(db_backup_dir, json_file)
+                                
+                                with open(json_path, 'r') as f:
+                                    collection_data = json.load(f)
+                                
+                                if collection_data:
+                                    # Convert string IDs back to ObjectId
+                                    for doc in collection_data:
+                                        if '_id' in doc:
+                                            doc['_id'] = ObjectId(doc['_id'])
+                                        # Convert other ID fields
+                                        for key, value in doc.items():
+                                            if isinstance(value, str) and (key.endswith('_id') or key.endswith('Id')):
+                                                try:
+                                                    doc[key] = ObjectId(value)
+                                                except:
+                                                    pass
+                                            # Convert ISO datetime strings back to datetime
+                                            elif isinstance(value, str) and key in ['created_at', 'updated_at', 'last_login']:
+                                                try:
+                                                    doc[key] = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                                                except:
+                                                    pass
+                                    
+                                    # Insert documents
+                                    db[collection_name].insert_many(collection_data)
+                        
+                        flash('Database restored successfully', 'success')
+                        logger.info(f"Database restored from backup by {current_user.username}")
+                else:
+                    # Try mongorestore
+                    try:
+                        subprocess.run([
+                            'mongorestore',
+                            '--uri', app.config['MONGODB_URI'],
+                            '--drop',  # Drop existing collections
+                            backup_dir
+                        ], check=True, capture_output=True)
+                        
+                        flash('Database restored successfully', 'success')
+                    except:
+                        flash('Could not restore backup - invalid format', 'danger')
+                
+        except Exception as e:
+            logger.error(f"Database restore error: {str(e)}")
+            flash(f'Error restoring backup: {str(e)}', 'danger')
+    
+    return render_template('restore_backup.html')
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    # Get routes with pagination
+    # Get pagination parameters
     page = request.args.get('page', 1, type=int)
     per_page = 20
     
-    # Get all routes with proper field conversion
+    # Get filter parameters
+    from_code_filter = request.args.get('from_code', '')
+    status_filter = request.args.get('status', '')
+    risk_level_filter = request.args.get('risk_level', '')
+    
+    # Build query based on filters
+    query = {}
+    
+    if from_code_filter:
+        # Match either fromCode or from_code fields
+        query['$or'] = [
+            {'fromCode': from_code_filter},
+            {'from_code': from_code_filter}
+        ]
+    
+    if status_filter:
+        query['processing_status'] = status_filter
+    
+    if risk_level_filter and risk_level_filter != 'N/A':
+        query['risk_scores.risk_level'] = risk_level_filter
+    
+    # Get total count for filtered results
+    total_filtered = db.routes.count_documents(query)
+    
+    # Get filtered routes with pagination
     skip = (page - 1) * per_page
-    routes_cursor = db.routes.find().sort('created_at', -1).skip(skip).limit(per_page)
+    routes_cursor = db.routes.find(query).sort('created_at', -1).skip(skip).limit(per_page)
     routes = []
     
     for route in routes_cursor:
@@ -165,19 +535,74 @@ def dashboard():
         routes.append(route_data)
     
     # Get statistics
-    total_routes = db.routes.count_documents({})
-    processed_routes = db.routes.count_documents({'processing_status': 'completed'})
-    pending_routes = db.routes.count_documents({'processing_status': 'pending'})
-    failed_routes = db.routes.count_documents({'processing_status': 'failed'})
+    if query:
+        # Filtered statistics
+        stats = {
+            'total': total_filtered,
+            'processed': db.routes.count_documents({**query, 'processing_status': 'completed'}),
+            'pending': db.routes.count_documents({**query, 'processing_status': 'pending'}),
+            'failed': db.routes.count_documents({**query, 'processing_status': 'failed'})
+        }
+    else:
+        # Overall statistics (no filters applied)
+        total_routes = db.routes.count_documents({})
+        stats = {
+            'total': total_routes,
+            'processed': db.routes.count_documents({'processing_status': 'completed'}),
+            'pending': db.routes.count_documents({'processing_status': 'pending'}),
+            'failed': db.routes.count_documents({'processing_status': 'failed'})
+        }
     
-    stats = {
-        'total': total_routes,
-        'processed': processed_routes,
-        'pending': pending_routes,
-        'failed': failed_routes
-    }
+    # Calculate total pages
+    total_pages = max(1, (total_filtered + per_page - 1) // per_page) if query else max(1, (stats['total'] + per_page - 1) // per_page)
     
-    return render_template('dashboard.html', routes=routes, stats=stats, page=page)
+    # Get unique from locations for filter dropdown
+    # First, get all unique fromCode and from_code values
+    pipeline = [
+        {
+            '$group': {
+                '_id': None,
+                'fromCodes': {'$addToSet': '$fromCode'},
+                'from_codes': {'$addToSet': '$from_code'}
+            }
+        }
+    ]
+    
+    result = list(db.routes.aggregate(pipeline))
+    all_codes = set()
+    
+    if result:
+        if result[0].get('fromCodes'):
+            all_codes.update([code for code in result[0]['fromCodes'] if code])
+        if result[0].get('from_codes'):
+            all_codes.update([code for code in result[0]['from_codes'] if code])
+    
+    # Get from location names for each code
+    from_location_map = {}
+    for code in all_codes:
+        if code:
+            # Find a route with this code to get the address
+            sample_route = db.routes.find_one({
+                '$or': [
+                    {'fromCode': code},
+                    {'from_code': code}
+                ]
+            })
+            if sample_route:
+                address = sample_route.get('fromAddress') or sample_route.get('from_address', '')
+                from_location_map[code] = f"{address} ({code})" if address else f"Location ({code})"
+    
+    return render_template('dashboard.html', 
+                         routes=routes, 
+                         stats=stats, 
+                         page=page,
+                         total_pages=total_pages,
+                         filters={
+                             'from_code': from_code_filter,
+                             'status': status_filter,
+                             'risk_level': risk_level_filter
+                         },
+                         from_locations=from_location_map)
 
 @app.route('/upload', methods=['GET', 'POST'])
 @login_required

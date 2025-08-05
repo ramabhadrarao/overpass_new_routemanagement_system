@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+
+{% block title %}Profile - HPCL Route Management{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2><i class="fas fa-user-circle"></i> User Profile</h2>
+        <hr>
+    </div>
+</div>
+
+<div class="row">
+    <!-- User Information Card -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-info-circle"></i> User Information</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless">
+                    <tbody>
+                        <tr>
+                            <th width="40%">Username:</th>
+                            <td>{{ user.username }}</td>
+                        </tr>
+                        <tr>
+                            <th>Email:</th>
+                            <td>{{ user.email }}</td>
+                        </tr>
+                        <tr>
+                            <th>Role:</th>
+                            <td>
+                                <span class="badge bg-{% if user.role == 'admin' %}danger{% else %}info{% endif %}">
+                                    {{ user.role|upper }}
+                                </span>
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>Last Login:</th>
+                            <td>
+                                {% if stats.last_login %}
+                                    {{ stats.last_login.strftime('%Y-%m-%d %H:%M:%S') if stats.last_login != 'Never' else 'Never' }}
+                                {% else %}
+                                    Never
+                                {% endif %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>Account Created:</th>
+                            <td>{{ stats.created_at.strftime('%Y-%m-%d') if stats.created_at else 'Unknown' }}</td>
+                        </tr>
+                        <tr>
+                            <th>Total Routes:</th>
+                            <td>{{ stats.total_routes }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Change Password Card -->
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-warning">
+                <h5 class="mb-0"><i class="fas fa-key"></i> Change Password</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('change_password') }}" id="changePasswordForm">
+                    <div class="mb-3">
+                        <label for="current_password" class="form-label">Current Password</label>
+                        <input type="password" class="form-control" id="current_password" 
+                               name="current_password" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="new_password" class="form-label">New Password</label>
+                        <input type="password" class="form-control" id="new_password" 
+                               name="new_password" required minlength="6">
+                        <div class="form-text">Minimum 6 characters</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="confirm_password" class="form-label">Confirm New Password</label>
+                        <input type="password" class="form-control" id="confirm_password" 
+                               name="confirm_password" required>
+                    </div>
+                    <button type="submit" class="btn btn-warning">
+                        <i class="fas fa-save"></i> Change Password
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Database Management Section (Admin Only) -->
+{% if user.role == 'admin' %}
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-danger text-white">
+                <h5 class="mb-0"><i class="fas fa-database"></i> Database Management (Admin Only)</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <!-- Backup Section -->
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-download"></i> Database Backup</h6>
+                        <p class="text-muted">Create a complete backup of the database including all routes, analysis data, and settings.</p>
+                        
+                        <div class="alert alert-info">
+                            <i class="fas fa-info-circle"></i> <strong>What's included:</strong>
+                            <ul class="mb-0">
+                                <li>All routes and waypoints</li>
+                                <li>Risk analysis data (sharp turns, blind spots, etc.)</li>
+                                <li>User accounts and settings</li>
+                                <li>API logs and cache data</li>
+                            </ul>
+                        </div>
+                        
+                        <button class="btn btn-primary" onclick="createBackup()">
+                            <i class="fas fa-download"></i> Create Database Backup
+                        </button>
+                        
+                        <div id="backupProgress" class="mt-3" style="display: none;">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="visually-hidden">Creating backup...</span>
+                            </div>
+                            <span class="ms-2">Creating backup, please wait...</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Restore Section -->
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-upload"></i> Database Restore</h6>
+                        <p class="text-muted">Restore database from a previous backup file.</p>
+                        
+                        <div class="alert alert-warning">
+                            <i class="fas fa-exclamation-triangle"></i> <strong>Warning:</strong>
+                            <ul class="mb-0">
+                                <li>Restoring will overwrite existing data</li>
+                                <li>Create a backup before restoring</li>
+                                <li>Only restore backups from trusted sources</li>
+                            </ul>
+                        </div>
+                        
+                        <a href="{{ url_for('restore_database') }}" class="btn btn-warning">
+                            <i class="fas fa-upload"></i> Restore Database
+                        </a>
+                    </div>
+                </div>
+                
+                <!-- Recent Backups -->
+                <div class="mt-4">
+                    <h6><i class="fas fa-history"></i> Backup Instructions</h6>
+                    <ol>
+                        <li>Click "Create Database Backup" to download a ZIP file</li>
+                        <li>Store the backup file in a secure location</li>
+                        <li>Backups include timestamp in filename</li>
+                        <li>Regular backups are recommended (weekly/monthly)</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- System Information (Admin Only) -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0"><i class="fas fa-info-circle"></i> System Information</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3">
+                        <h6>Database Size</h6>
+                        <p class="mb-0" id="dbSize">Calculating...</p>
+                    </div>
+                    <div class="col-md-3">
+                        <h6>Total API Calls</h6>
+                        <p class="mb-0" id="apiCalls">Calculating...</p>
+                    </div>
+                    <div class="col-md-3">
+                        <h6>Cache Entries</h6>
+                        <p class="mb-0" id="cacheEntries">Calculating...</p>
+                    </div>
+                    <div class="col-md-3">
+                        <h6>Total Users</h6>
+                        <p class="mb-0" id="totalUsers">Calculating...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    // Password validation
+    $('#changePasswordForm').on('submit', function(e) {
+        const newPassword = $('#new_password').val();
+        const confirmPassword = $('#confirm_password').val();
+        
+        if (newPassword !== confirmPassword) {
+            e.preventDefault();
+            alert('New passwords do not match!');
+            return false;
+        }
+        
+        if (newPassword.length < 6) {
+            e.preventDefault();
+            alert('Password must be at least 6 characters long!');
+            return false;
+        }
+    });
+    
+    // Load system stats for admin
+    {% if user.role == 'admin' %}
+    loadSystemStats();
+    {% endif %}
+});
+
+// Create backup function
+function createBackup() {
+    if (!confirm('Create a database backup? This may take a few moments for large databases.')) {
+        return;
+    }
+    
+    $('#backupProgress').show();
+    
+    // Create a temporary link and click it
+    const link = document.createElement('a');
+    link.href = '{{ url_for("backup_database") }}';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    // Hide progress after a delay
+    setTimeout(() => {
+        $('#backupProgress').hide();
+    }, 3000);
+}
+
+// Load system statistics
+function loadSystemStats() {
+    $.ajax({
+        url: '/api/statistics',
+        method: 'GET',
+        success: function(response) {
+            // Update API calls
+            let totalApiCalls = 0;
+            if (response.api_call_counts) {
+                response.api_call_counts.forEach(api => {
+                    totalApiCalls += api.count;
+                });
+            }
+            $('#apiCalls').text(totalApiCalls.toLocaleString());
+        }
+    });
+    
+    // You can add additional AJAX calls here to get:
+    // - Database size (would need a new endpoint)
+    // - Cache entries count
+    // - Total users count
+    
+    // For now, using placeholder values
+    $('#dbSize').text('Calculating...');
+    $('#cacheEntries').text('Calculating...');
+    $('#totalUsers').text('{{ user.role }}' === 'admin' ? 'Admin View' : 'N/A');
+}
+</script>
+{% endblock %}

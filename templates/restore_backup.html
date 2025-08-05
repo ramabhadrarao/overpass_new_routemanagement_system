@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}Restore Database - HPCL Route Management{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header bg-warning">
+                <h4 class="mb-0"><i class="fas fa-upload"></i> Restore Database from Backup</h4>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-danger">
+                    <h5><i class="fas fa-exclamation-triangle"></i> Critical Warning</h5>
+                    <p>Restoring a database backup will:</p>
+                    <ul>
+                        <li>Replace ALL current data in the database</li>
+                        <li>Cannot be undone once started</li>
+                        <li>May take several minutes for large backups</li>
+                    </ul>
+                    <p class="mb-0"><strong>Make sure to create a current backup before proceeding!</strong></p>
+                </div>
+                
+                <form method="POST" enctype="multipart/form-data" id="restoreForm">
+                    <div class="mb-3">
+                        <label for="backup_file" class="form-label">Select Backup File (.zip)</label>
+                        <input type="file" class="form-control" id="backup_file" name="backup_file" 
+                               accept=".zip" required>
+                        <div class="form-text">
+                            Only ZIP files created by the backup function are supported
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="clear_existing" 
+                                   name="clear_existing" checked>
+                            <label class="form-check-label" for="clear_existing">
+                                Clear existing data before restore (recommended)
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="confirm_restore" required>
+                            <label class="form-check-label" for="confirm_restore">
+                                I understand this will overwrite all current data
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="d-flex justify-content-between">
+                        <a href="{{ url_for('profile') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Cancel
+                        </a>
+                        <button type="submit" class="btn btn-danger" id="restoreBtn">
+                            <i class="fas fa-upload"></i> Restore Database
+                        </button>
+                    </div>
+                </form>
+                
+                <div id="restoreProgress" class="mt-4" style="display: none;">
+                    <div class="alert alert-info">
+                        <div class="d-flex align-items-center">
+                            <div class="spinner-border spinner-border-sm me-2" role="status">
+                                <span class="visually-hidden">Restoring...</span>
+                            </div>
+                            <div>
+                                <strong>Restoring database...</strong>
+                                <p class="mb-0">Please do not close this window or navigate away.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="progress" style="height: 25px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             role="progressbar" style="width: 100%">
+                            Processing...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Instructions Card -->
+        <div class="card mt-3">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-info-circle"></i> Restore Instructions</h5>
+            </div>
+            <div class="card-body">
+                <ol>
+                    <li>Create a backup of current data first (from Profile page)</li>
+                    <li>Select the backup ZIP file you want to restore</li>
+                    <li>Confirm that you want to overwrite existing data</li>
+                    <li>Click "Restore Database" and wait for completion</li>
+                    <li>System will redirect to dashboard when complete</li>
+                </ol>
+                
+                <h6 class="mt-3">Backup File Requirements:</h6>
+                <ul>
+                    <li>Must be a ZIP file created by the system backup function</li>
+                    <li>File name format: route_management_backup_YYYYMMDD_HHMMSS.zip</li>
+                    <li>Must contain valid database export files</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    $('#restoreForm').on('submit', function(e) {
+        const confirmed = $('#confirm_restore').is(':checked');
+        
+        if (!confirmed) {
+            e.preventDefault();
+            alert('Please confirm that you understand the data will be overwritten.');
+            return false;
+        }
+        
+        const file = $('#backup_file')[0].files[0];
+        if (!file) {
+            e.preventDefault();
+            alert('Please select a backup file.');
+            return false;
+        }
+        
+        if (!file.name.endsWith('.zip')) {
+            e.preventDefault();
+            alert('Please select a valid ZIP backup file.');
+            return false;
+        }
+        
+        if (!confirm('Are you absolutely sure you want to restore this backup? All current data will be lost!')) {
+            e.preventDefault();
+            return false;
+        }
+        
+        // Show progress
+        $('#restoreProgress').show();
+        $('#restoreBtn').prop('disabled', true);
+    });
+});
+</script>
+{% endblock %}
