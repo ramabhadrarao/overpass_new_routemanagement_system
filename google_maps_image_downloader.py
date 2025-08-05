@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Google Maps Image Downloader for HPCL Sharp Turns and Blind Spots
-Downloads Street View and Satellite images for each critical point
-Enhanced with multiple API key management and quota tracking
+OPTIMIZED VERSION - Minimizes API costs
+Enhanced with multiple API key management and smart download strategies
 """
 
 import os
@@ -22,7 +22,7 @@ import threading
 logger = logging.getLogger(__name__)
 
 class GoogleMapsImageDownloader:
-    """Downloads and manages Google Maps images for sharp turns and blind spots"""
+    """Downloads and manages Google Maps images for sharp turns and blind spots - COST OPTIMIZED"""
     
     def __init__(self, api_key: str = None, base_path: str = "./route_images"):
         """
@@ -52,11 +52,18 @@ class GoogleMapsImageDownloader:
         
         # API endpoints
         self.street_view_url = "https://maps.googleapis.com/maps/api/streetview"
+        self.street_view_metadata_url = "https://maps.googleapis.com/maps/api/streetview/metadata"
         self.static_map_url = "https://maps.googleapis.com/maps/api/staticmap"
         
         # Rate limiting
         self.request_delay = 0.1  # 100ms between requests
         self.last_request_time = 0
+        
+        # Cost optimization settings
+        self.enable_metadata_check = True  # Check if street view exists before downloading
+        self.max_markers_per_map = 100     # Maximum markers on one static map
+        self.prioritize_high_risk = True   # Only download for high-risk points
+        self.risk_threshold = 7            # Minimum risk score for individual downloads
         
         # Database for tracking API usage
         self.db_path = self.base_path / "api_usage.db"
@@ -69,7 +76,7 @@ class GoogleMapsImageDownloader:
         else:
             self.api_key = None
         
-        logger.info(f"✅ Image Downloader initialized with {len(self.api_keys)} API keys")
+        logger.info(f"✅ Cost-Optimized Image Downloader initialized with {len(self.api_keys)} API keys")
     
     def _load_keys_from_env(self) -> List[str]:
         """Load API keys from environment variables"""
@@ -258,72 +265,6 @@ class GoogleMapsImageDownloader:
             conn.commit()
             conn.close()
     
-    def get_usage_stats(self, api_key: str = None) -> Dict[str, Any]:
-        """Get usage statistics for API keys"""
-        with self.db_lock:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            current_year = datetime.now().year
-            current_month = datetime.now().month
-            
-            if api_key:
-                # Stats for specific key
-                cursor.execute("""
-                    SELECT 
-                        mu.total_requests,
-                        mu.successful_requests,
-                        mu.failed_requests,
-                        ak.monthly_limit
-                    FROM monthly_usage mu
-                    JOIN api_keys ak ON mu.api_key = ak.api_key
-                    WHERE mu.api_key = ? AND mu.year = ? AND mu.month = ?
-                """, (api_key, current_year, current_month))
-                
-                result = cursor.fetchone()
-                if result:
-                    return {
-                        'api_key': api_key[:10] + '...',
-                        'total_requests': result[0],
-                        'successful_requests': result[1],
-                        'failed_requests': result[2],
-                        'monthly_limit': result[3],
-                        'remaining': result[3] - result[0]
-                    }
-            else:
-                # Stats for all keys
-                cursor.execute("""
-                    SELECT 
-                        mu.api_key,
-                        mu.total_requests,
-                        mu.successful_requests,
-                        mu.failed_requests,
-                        ak.monthly_limit,
-                        ak.is_active
-                    FROM monthly_usage mu
-                    JOIN api_keys ak ON mu.api_key = ak.api_key
-                    WHERE mu.year = ? AND mu.month = ?
-                """, (current_year, current_month))
-                
-                results = cursor.fetchall()
-                stats = []
-                for row in results:
-                    stats.append({
-                        'api_key': row[0][:10] + '...',
-                        'total_requests': row[1],
-                        'successful_requests': row[2],
-                        'failed_requests': row[3],
-                        'monthly_limit': row[4],
-                        'remaining': row[4] - row[1],
-                        'is_active': row[5]
-                    })
-                
-                conn.close()
-                return {'keys': stats, 'total_keys': len(self.api_keys)}
-            
-            conn.close()
-            return {}
-    
     def _rate_limit(self):
         """Implement rate limiting to avoid API quota issues"""
         current_time = time.time()
@@ -331,6 +272,179 @@ class GoogleMapsImageDownloader:
         if time_since_last < self.request_delay:
             time.sleep(self.request_delay - time_since_last)
         self.last_request_time = time.time()
+    
+    def check_street_view_availability(self, lat: float, lng: float, api_key: str) -> bool:
+        """
+        Check if street view is available at location (uses metadata API - cheaper)
+        Metadata requests are FREE or much cheaper than actual image requests
+        """
+        if not self.enable_metadata_check:
+            return True  # Skip check if disabled
+        
+        try:
+            self._rate_limit()
+            
+            params = {
+                'location': f'{lat},{lng}',
+                'key': api_key
+            }
+            
+            response = requests.get(self.street_view_metadata_url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                is_available = data.get('status') == 'OK'
+                
+                # Log metadata check (these are usually free or very cheap)
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='streetview_metadata',
+                    success=True,
+                    response_code=200,
+                    latitude=lat,
+                    longitude=lng,
+                    error_message=None if is_available else 'No street view coverage'
+                )
+                
+                if not is_available:
+                    logger.warning(f"❌ No street view available at {lat},{lng}")
+                
+                return is_available
+            else:
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error checking street view availability: {e}")
+            return False
+    
+    def download_route_overview_map(self, route_data: Dict, route_id: str, 
+                                   include_all_risks: bool = True) -> Optional[str]:
+        """
+        Download ONE comprehensive map showing ALL risk points (MOST COST EFFECTIVE)
+        This replaces dozens of individual API calls with just ONE
+        """
+        try:
+            # Generate filename
+            route_folder = self.get_route_image_folder(route_id)
+            filename = "route_comprehensive_risk_overview.png"
+            filepath = route_folder / filename
+            
+            # Check if already exists
+            if filepath.exists():
+                logger.info(f"✅ Comprehensive overview already exists: {filepath}")
+                return str(filepath)
+            
+            # Get available API key
+            api_key = self._get_available_key()
+            if not api_key:
+                logger.error("❌ No available API keys with remaining quota")
+                return None
+            
+            # Prepare map parameters
+            params = {
+                'size': '800x600',
+                'maptype': 'roadmap',
+                'key': api_key,
+                'scale': 2,  # Higher quality
+                'format': 'png'
+            }
+            
+            # Collect all risk points
+            all_markers = []
+            
+            # Get route data
+            route = route_data.get('route', {})
+            collections = route_data.get('collections', {})
+            
+            # Add start and end points
+            start_coords = route.get('fromCoordinates', {})
+            end_coords = route.get('toCoordinates', {})
+            
+            if start_coords:
+                all_markers.append(f"color:green|size:mid|label:S|{start_coords.get('latitude')},{start_coords.get('longitude')}")
+            if end_coords:
+                all_markers.append(f"color:red|size:mid|label:E|{end_coords.get('latitude')},{end_coords.get('longitude')}")
+            
+            if include_all_risks:
+                # Add sharp turns (only high risk)
+                sharp_turns = collections.get('sharp_turns', [])
+                high_risk_turns = [t for t in sharp_turns if t.get('riskScore', 0) >= self.risk_threshold]
+                for i, turn in enumerate(high_risk_turns[:25]):  # Limit to 25
+                    lat, lng = turn.get('latitude'), turn.get('longitude')
+                    if lat and lng:
+                        all_markers.append(f"color:orange|size:small|label:T|{lat},{lng}")
+                
+                # Add blind spots (only high risk)
+                blind_spots = collections.get('blind_spots', [])
+                high_risk_spots = [s for s in blind_spots if s.get('riskScore', 0) >= self.risk_threshold]
+                for i, spot in enumerate(high_risk_spots[:25]):  # Limit to 25
+                    lat, lng = spot.get('latitude'), spot.get('longitude')
+                    if lat and lng:
+                        all_markers.append(f"color:red|size:small|label:B|{lat},{lng}")
+                
+                # Add critical emergency services
+                emergency_services = collections.get('emergency_services', [])
+                hospitals = [e for e in emergency_services if e.get('serviceType') == 'hospital']
+                for i, hospital in enumerate(hospitals[:10]):  # Limit to 10
+                    lat, lng = hospital.get('latitude'), hospital.get('longitude')
+                    if lat and lng:
+                        all_markers.append(f"color:blue|size:tiny|label:H|{lat},{lng}")
+            
+            # Add route path if available
+            route_points = route.get('routePoints', [])
+            if route_points and len(route_points) > 1:
+                # Simplify route to avoid URL length issues
+                step = max(1, len(route_points) // 50)  # Max 50 points
+                path_points = [f"{p['latitude']},{p['longitude']}" for p in route_points[::step]]
+                if path_points:
+                    params['path'] = f"color:0x0000ff|weight:3|{('|').join(path_points)}"
+            
+            # Add all markers
+            if all_markers:
+                # Limit total markers to avoid URL length issues
+                all_markers = all_markers[:self.max_markers_per_map]
+                params['markers'] = '|'.join(all_markers)
+            
+            # Make the API call
+            self._rate_limit()
+            logger.info(f"📍 Downloading comprehensive map with {len(all_markers)} risk points")
+            
+            response = requests.get(self.static_map_url, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                # Save image
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+                
+                logger.info(f"✅ Comprehensive overview saved: {filepath}")
+                logger.info(f"💰 Saved ~{len(all_markers)} individual API calls!")
+                
+                # Log successful usage
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap_comprehensive',
+                    success=True,
+                    response_code=200,
+                    image_type='comprehensive_overview',
+                    route_id=route_id,
+                    file_path=str(filepath)
+                )
+                
+                return str(filepath)
+            else:
+                logger.error(f"Failed to download comprehensive map: {response.status_code}")
+                self._log_api_usage(
+                    api_key=api_key,
+                    request_type='staticmap_comprehensive',
+                    success=False,
+                    response_code=response.status_code,
+                    error_message=f"HTTP {response.status_code}"
+                )
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error downloading comprehensive map: {e}")
+            return None
     
     def get_route_image_folder(self, route_id: str) -> Path:
         """Get or create folder for route images"""
@@ -345,19 +459,7 @@ class GoogleMapsImageDownloader:
                              force_download: bool = False) -> Optional[str]:
         """
         Download street view image for a specific location
-        
-        Args:
-            lat: Latitude
-            lng: Longitude
-            route_id: Route identifier
-            turn_id: Turn/spot identifier
-            heading: Camera heading (0-360, 0=North, 90=East)
-            fov: Field of view (10-120)
-            pitch: Up/down angle (-90 to 90)
-            force_download: Force re-download even if file exists
-        
-        Returns:
-            Path to saved image or None if failed
+        OPTIMIZED: Checks availability first to avoid wasted API calls
         """
         try:
             # Calculate heading if not provided
@@ -379,6 +481,10 @@ class GoogleMapsImageDownloader:
             if not api_key:
                 logger.error("❌ No available API keys with remaining quota")
                 return None
+            
+            # COST OPTIMIZATION: Check if street view exists before downloading
+            if not self.check_street_view_availability(lat, lng, api_key):
+                return None  # No street view available, don't waste API call
             
             # Rate limit before making API call
             self._rate_limit()
@@ -458,17 +564,6 @@ class GoogleMapsImageDownloader:
                            force_download: bool = False) -> Optional[str]:
         """
         Download satellite image for a specific location
-        
-        Args:
-            lat: Latitude
-            lng: Longitude
-            route_id: Route identifier
-            turn_id: Turn/spot identifier
-            zoom: Zoom level (1-20, higher = more detail)
-            force_download: Force re-download even if file exists
-        
-        Returns:
-            Path to saved image or None if failed
         """
         try:
             # Generate filename
@@ -559,163 +654,18 @@ class GoogleMapsImageDownloader:
                 )
             return None
 
-    def download_roadmap_with_markers(self, lat: float, lng: float,
-                                    route_id: str, turn_id: str,
-                                    risk_level: str = "high",
-                                    zoom: int = 17,
-                                    force_download: bool = False) -> Optional[str]:
-        """
-        Download roadmap with risk marker for a specific location
-        
-        Args:
-            lat: Latitude
-            lng: Longitude
-            route_id: Route identifier
-            turn_id: Turn/spot identifier
-            risk_level: Risk level for color coding
-            zoom: Zoom level
-            force_download: Force re-download even if file exists
-        
-        Returns:
-            Path to saved image or None if failed
-        """
-        try:
-            # Generate filename
-            route_folder = self.get_route_image_folder(route_id)
-            filename = f"roadmap_{turn_id}.png"
-            filepath = route_folder / filename
-            
-            # Check if image already exists (CACHING LOGIC PRESERVED)
-            if filepath.exists() and not force_download:
-                logger.info(f"✅ Roadmap already exists: {filepath}")
-                return str(filepath)
-            
-            # Get available API key
-            api_key = self._get_available_key()
-            if not api_key:
-                logger.error("❌ No available API keys with remaining quota")
-                return None
-            
-            # Rate limit before making API call
-            self._rate_limit()
-            
-            # Determine marker color based on risk
-            marker_colors = {
-                'critical': 'red',
-                'high': 'orange', 
-                'medium': 'yellow',
-                'low': 'green'
-            }
-            color = marker_colors.get(risk_level.lower(), 'red')
-            
-            params = {
-                'center': f'{lat},{lng}',
-                'zoom': zoom,
-                'size': '640x480',
-                'maptype': 'roadmap',
-                'markers': f'color:{color}|size:large|{lat},{lng}',
-                'key': api_key,
-                'scale': 2
-            }
-            
-            logger.info(f"Downloading roadmap for turn {turn_id}")
-            response = requests.get(self.static_map_url, params=params, timeout=30)
-            
-            if response.status_code == 200:
-                with open(filepath, 'wb') as f:
-                    f.write(response.content)
-                
-                logger.info(f"✅ Roadmap saved: {filepath}")
-                
-                # Log successful usage
-                self._log_api_usage(
-                    api_key=api_key,
-                    request_type='staticmap',
-                    success=True,
-                    response_code=200,
-                    image_type='roadmap',
-                    route_id=route_id,
-                    turn_id=turn_id,
-                    latitude=lat,
-                    longitude=lng,
-                    file_path=str(filepath)
-                )
-                
-                return str(filepath)
-            else:
-                logger.error(f"Failed to download roadmap: {response.status_code}")
-                
-                # Log failed usage
-                self._log_api_usage(
-                    api_key=api_key,
-                    request_type='staticmap',
-                    success=False,
-                    response_code=response.status_code,
-                    image_type='roadmap',
-                    route_id=route_id,
-                    turn_id=turn_id,
-                    latitude=lat,
-                    longitude=lng,
-                    error_message=f"HTTP {response.status_code}"
-                )
-                
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error downloading roadmap: {e}")
-            if 'api_key' in locals():
-                self._log_api_usage(
-                    api_key=api_key,
-                    request_type='staticmap',
-                    success=False,
-                    image_type='roadmap',
-                    route_id=route_id,
-                    turn_id=turn_id,
-                    latitude=lat,
-                    longitude=lng,
-                    error_message=str(e)
-                )
-            return None
-    
-    def get_image_status(self, route_id: str, turn_id: str) -> Dict[str, bool]:
-        """
-        Check which images already exist for a turn/spot
-        
-        Returns dict with status of each image type
-        """
-        route_folder = self.get_route_image_folder(route_id)
-        
-        status = {
-            'street_view': (route_folder / f"streetview_{turn_id}_h0.jpg").exists(),
-            'street_view_90': (route_folder / f"streetview_{turn_id}_h90.jpg").exists(),
-            'street_view_180': (route_folder / f"streetview_{turn_id}_h180.jpg").exists(),
-            'street_view_270': (route_folder / f"streetview_{turn_id}_h270.jpg").exists(),
-            'satellite': (route_folder / f"satellite_{turn_id}.png").exists(),
-            'roadmap': (route_folder / f"roadmap_{turn_id}.png").exists()
-        }
-        
-        status['all_exist'] = all([
-            status['street_view'] or status['street_view_90'],  # At least one street view
-            status['satellite'],
-            status['roadmap']
-        ])
-        
-        return status
-
     def download_turn_images(self, turn_data: Dict, route_id: str, 
                             force_download: bool = False) -> Dict[str, str]:
         """
-        Download all images for a sharp turn
-        
-        Args:
-            turn_data: Dictionary with turn information
-            route_id: Route identifier
-            force_download: Force re-download even if files exist
-            
-        Returns:
-            Dictionary with paths to downloaded images
+        OPTIMIZED: Download images for a sharp turn only if high risk
         """
         turn_id = str(turn_data.get('_id', ''))
+        risk_score = turn_data.get('riskScore', 0)
+        
+        # COST OPTIMIZATION: Skip low-risk turns
+        if self.prioritize_high_risk and risk_score < self.risk_threshold:
+            logger.info(f"⏭️ Skipping low-risk turn {turn_id} (risk: {risk_score})")
+            return {}
         
         # Check existing images
         if not force_download:
@@ -724,7 +674,6 @@ class GoogleMapsImageDownloader:
         
         lat = turn_data.get('latitude')
         lng = turn_data.get('longitude')
-        risk_score = turn_data.get('riskScore', 5)
         turn_angle = turn_data.get('turnAngle', 0)
         
         # Determine risk level
@@ -746,93 +695,289 @@ class GoogleMapsImageDownloader:
         
         images = {}
         
-        # Download street view (with caching)
+        # COST OPTIMIZATION: Only download ONE street view for turns
         street_view_path = self.download_street_view_image(
             lat, lng, route_id, turn_id, heading=heading, force_download=force_download
         )
         if street_view_path:
             images['street_view'] = street_view_path
         
-        # Download satellite view (with caching)
-        satellite_path = self.download_satellite_image(
-            lat, lng, route_id, turn_id, zoom=18, force_download=force_download
-        )
-        if satellite_path:
-            images['satellite'] = satellite_path
+        # COST OPTIMIZATION: Skip satellite for medium risk
+        if risk_score >= 7:
+            satellite_path = self.download_satellite_image(
+                lat, lng, route_id, turn_id, zoom=18, force_download=force_download
+            )
+            if satellite_path:
+                images['satellite'] = satellite_path
         
-        # Download roadmap with marker (with caching)
-        roadmap_path = self.download_roadmap_with_markers(
-            lat, lng, route_id, turn_id, risk_level=risk_level, force_download=force_download
-        )
-        if roadmap_path:
-            images['roadmap'] = roadmap_path
+        # COST OPTIMIZATION: Skip roadmap - use comprehensive overview instead
         
         return images
 
     def download_blind_spot_images(self, spot_data: Dict, route_id: str,
                                 force_download: bool = False) -> Dict[str, str]:
         """
-        Download all images for a blind spot
-        
-        Args:
-            spot_data: Dictionary with blind spot information
-            route_id: Route identifier
-            force_download: Force re-download even if files exist
-            
-        Returns:
-            Dictionary with paths to downloaded images
+        OPTIMIZED: Download images for blind spots based on risk and type
         """
         lat = spot_data.get('latitude')
         lng = spot_data.get('longitude')
         spot_id = str(spot_data.get('_id', ''))
-        risk_score = spot_data.get('riskScore', 5)
+        risk_score = spot_data.get('riskScore', 0)
+        spot_type = spot_data.get('spotType', 'unknown')
+        
+        # COST OPTIMIZATION: Skip low-risk blind spots
+        if self.prioritize_high_risk and risk_score < self.risk_threshold:
+            logger.info(f"⏭️ Skipping low-risk blind spot {spot_id} (risk: {risk_score})")
+            return {}
         
         # Check existing images
         if not force_download:
             status = self.get_image_status(route_id, f"blind_{spot_id}")
             logger.info(f"Image status for blind spot {spot_id}: {sum(status.values())}/5 images exist")
         
-        # Determine risk level
-        if risk_score >= 8:
-            risk_level = 'critical'
-        elif risk_score >= 6:
-            risk_level = 'high'
-        elif risk_score >= 4:
-            risk_level = 'medium'
-        else:
-            risk_level = 'low'
-        
         images = {}
         
-        # Download multiple street view angles for blind spots (with caching)
-        for heading in [0, 90, 180, 270]:  # Four directions
+        # COST OPTIMIZATION: Reduce angles based on spot type
+        if spot_type == 'intersection' and risk_score >= 8:
+            # For critical intersections, get all 4 directions
+            headings = [0, 90, 180, 270]
+        elif spot_type == 'curve' and risk_score >= 7:
+            # For curves, only get approach directions
+            headings = [0, 180]
+        else:
+            # For other types, only get main direction
+            headings = [0]
+        
+        # Download street views for selected headings
+        for heading in headings:
             street_view_path = self.download_street_view_image(
                 lat, lng, route_id, f"blind_{spot_id}", heading=heading, force_download=force_download
             )
             if street_view_path:
                 images[f'street_view_{heading}'] = street_view_path
         
-        # Download satellite view (with caching)
-        satellite_path = self.download_satellite_image(
-            lat, lng, route_id, f"blind_{spot_id}", zoom=19, force_download=force_download
-        )
-        if satellite_path:
-            images['satellite'] = satellite_path
+        # COST OPTIMIZATION: Satellite only for critical blind spots
+        if risk_score >= 8:
+            satellite_path = self.download_satellite_image(
+                lat, lng, route_id, f"blind_{spot_id}", zoom=19, force_download=force_download
+            )
+            if satellite_path:
+                images['satellite'] = satellite_path
         
         return images
+    
+    def download_route_images_smart(self, route_data: Dict, route_id: str,
+                                   max_individual_downloads: int = 10) -> Dict[str, Any]:
+        """
+        SMART DOWNLOAD STRATEGY - Minimizes costs while maximizing coverage
+        
+        Strategy:
+        1. Download ONE comprehensive overview map (1 API call)
+        2. Download street views only for TOP critical points
+        3. Use metadata checks to avoid wasted calls
+        
+        Returns:
+            Dictionary with all downloaded image paths and statistics
+        """
+        logger.info("🚀 Starting smart image download strategy")
+        
+        downloaded_images = {
+            'overview': None,
+            'sharp_turns': {},
+            'blind_spots': {},
+            'statistics': {
+                'total_api_calls': 0,
+                'saved_api_calls': 0,
+                'total_risk_points': 0,
+                'downloaded_points': 0
+            }
+        }
+        
+        collections = route_data.get('collections', {})
+        
+        # Step 1: Download comprehensive overview (1 API call)
+        logger.info("📍 Step 1: Downloading comprehensive overview map")
+        overview_path = self.download_route_overview_map(route_data, route_id)
+        if overview_path:
+            downloaded_images['overview'] = overview_path
+            downloaded_images['statistics']['total_api_calls'] += 1
+        
+        # Step 2: Identify critical points
+        all_sharp_turns = collections.get('sharp_turns', [])
+        all_blind_spots = collections.get('blind_spots', [])
+        
+        # Sort by risk score
+        critical_turns = sorted(
+            [t for t in all_sharp_turns if t.get('riskScore', 0) >= self.risk_threshold],
+            key=lambda x: x.get('riskScore', 0),
+            reverse=True
+        )
+        
+        critical_spots = sorted(
+            [s for s in all_blind_spots if s.get('riskScore', 0) >= self.risk_threshold],
+            key=lambda x: x.get('riskScore', 0),
+            reverse=True
+        )
+        
+        total_critical = len(critical_turns) + len(critical_spots)
+        downloaded_images['statistics']['total_risk_points'] = total_critical
+        
+        logger.info(f"📊 Found {len(critical_turns)} critical turns and {len(critical_spots)} critical blind spots")
+        
+        # Step 3: Download individual images for TOP critical points only
+        remaining_budget = max_individual_downloads
+        
+        # Prioritize by combining all critical points and sorting by risk
+        all_critical_points = []
+        
+        for turn in critical_turns:
+            all_critical_points.append({
+                'type': 'turn',
+                'data': turn,
+                'risk': turn.get('riskScore', 0)
+            })
+        
+        for spot in critical_spots:
+            all_critical_points.append({
+                'type': 'spot',
+                'data': spot,
+                'risk': spot.get('riskScore', 0)
+            })
+        
+        # Sort all by risk score
+        all_critical_points.sort(key=lambda x: x['risk'], reverse=True)
+        
+        # Download images for top critical points
+        for point in all_critical_points[:remaining_budget]:
+            if point['type'] == 'turn':
+                turn_images = self.download_turn_images(point['data'], route_id)
+                if turn_images:
+                    turn_id = str(point['data'].get('_id', ''))
+                    downloaded_images['sharp_turns'][turn_id] = turn_images
+                    downloaded_images['statistics']['total_api_calls'] += len(turn_images)
+                    downloaded_images['statistics']['downloaded_points'] += 1
+            else:
+                spot_images = self.download_blind_spot_images(point['data'], route_id)
+                if spot_images:
+                    spot_id = str(point['data'].get('_id', ''))
+                    downloaded_images['blind_spots'][spot_id] = spot_images
+                    downloaded_images['statistics']['total_api_calls'] += len(spot_images)
+                    downloaded_images['statistics']['downloaded_points'] += 1
+        
+        # Calculate saved API calls
+        potential_calls = total_critical * 3  # Each point could need 3 images
+        actual_calls = downloaded_images['statistics']['total_api_calls']
+        downloaded_images['statistics']['saved_api_calls'] = potential_calls - actual_calls
+        
+        # Log summary
+        stats = downloaded_images['statistics']
+        logger.info("="*50)
+        logger.info("💰 COST OPTIMIZATION SUMMARY:")
+        logger.info(f"📍 Total risk points found: {stats['total_risk_points']}")
+        logger.info(f"📷 Points with individual images: {stats['downloaded_points']}")
+        logger.info(f"🔗 Total API calls made: {stats['total_api_calls']}")
+        logger.info(f"💵 API calls saved: {stats['saved_api_calls']}")
+        logger.info(f"📊 Coverage: {(stats['downloaded_points']/stats['total_risk_points']*100):.1f}% of critical points")
+        logger.info("="*50)
+        
+        return downloaded_images
+    
+    def get_image_status(self, route_id: str, turn_id: str) -> Dict[str, bool]:
+        """
+        Check which images already exist for a turn/spot
+        
+        Returns dict with status of each image type
+        """
+        route_folder = self.get_route_image_folder(route_id)
+        
+        status = {
+            'street_view': (route_folder / f"streetview_{turn_id}_h0.jpg").exists(),
+            'street_view_90': (route_folder / f"streetview_{turn_id}_h90.jpg").exists(),
+            'street_view_180': (route_folder / f"streetview_{turn_id}_h180.jpg").exists(),
+            'street_view_270': (route_folder / f"streetview_{turn_id}_h270.jpg").exists(),
+            'satellite': (route_folder / f"satellite_{turn_id}.png").exists(),
+            'roadmap': (route_folder / f"roadmap_{turn_id}.png").exists(),
+            'overview': (route_folder / "route_comprehensive_risk_overview.png").exists()
+        }
+        
+        status['all_exist'] = all([
+            status['street_view'] or status['street_view_90'],  # At least one street view
+            status['satellite'],
+            status['overview']  # Changed from roadmap to overview
+        ])
+        
+        return status
+    
+    def get_usage_stats(self, api_key: str = None) -> Dict[str, Any]:
+        """Get usage statistics for API keys"""
+        with self.db_lock:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            
+            if api_key:
+                # Stats for specific key
+                cursor.execute("""
+                    SELECT 
+                        mu.total_requests,
+                        mu.successful_requests,
+                        mu.failed_requests,
+                        ak.monthly_limit
+                    FROM monthly_usage mu
+                    JOIN api_keys ak ON mu.api_key = ak.api_key
+                    WHERE mu.api_key = ? AND mu.year = ? AND mu.month = ?
+                """, (api_key, current_year, current_month))
+                
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        'api_key': api_key[:10] + '...',
+                        'total_requests': result[0],
+                        'successful_requests': result[1],
+                        'failed_requests': result[2],
+                        'monthly_limit': result[3],
+                        'remaining': result[3] - result[0]
+                    }
+            else:
+                # Stats for all keys
+                cursor.execute("""
+                    SELECT 
+                        mu.api_key,
+                        mu.total_requests,
+                        mu.successful_requests,
+                        mu.failed_requests,
+                        ak.monthly_limit,
+                        ak.is_active
+                    FROM monthly_usage mu
+                    JOIN api_keys ak ON mu.api_key = ak.api_key
+                    WHERE mu.year = ? AND mu.month = ?
+                """, (current_year, current_month))
+                
+                results = cursor.fetchall()
+                stats = []
+                for row in results:
+                    stats.append({
+                        'api_key': row[0][:10] + '...',
+                        'total_requests': row[1],
+                        'successful_requests': row[2],
+                        'failed_requests': row[3],
+                        'monthly_limit': row[4],
+                        'remaining': row[4] - row[1],
+                        'is_active': row[5]
+                    })
+                
+                conn.close()
+                return {'keys': stats, 'total_keys': len(self.api_keys)}
+            
+            conn.close()
+            return {}
     
     def create_image_composite(self, images: List[str], output_path: str,
                              layout: str = 'horizontal') -> Optional[str]:
         """
         Create a composite image from multiple images
-        
-        Args:
-            images: List of image paths
-            output_path: Output file path
-            layout: 'horizontal' or 'vertical'
-            
-        Returns:
-            Path to composite image or None if failed
         """
         try:
             if not images:
@@ -881,8 +1026,6 @@ class GoogleMapsImageDownloader:
     
     def cleanup_old_images(self, route_id: str, days_old: int = 30):
         """Clean up old images for a route"""
-        import datetime
-        
         route_folder = self.get_route_image_folder(route_id)
         cutoff_time = time.time() - (days_old * 24 * 60 * 60)
         
@@ -893,9 +1036,7 @@ class GoogleMapsImageDownloader:
                     logger.info(f"Deleted old image: {file_path}")
     
     def clear_route_cache(self, route_id: str):
-        """
-        Clear all cached images for a specific route
-        """
+        """Clear all cached images for a specific route"""
         route_folder = self.get_route_image_folder(route_id)
         if route_folder.exists():
             import shutil
@@ -904,9 +1045,7 @@ class GoogleMapsImageDownloader:
             route_folder.mkdir(parents=True, exist_ok=True)
 
     def get_cache_stats(self, route_id: str) -> Dict[str, Any]:
-        """
-        Get statistics about cached images for a route
-        """
+        """Get statistics about cached images for a route"""
         route_folder = self.get_route_image_folder(route_id)
         
         if not route_folder.exists():
@@ -921,7 +1060,8 @@ class GoogleMapsImageDownloader:
         image_types = {
             'streetview': 0,
             'satellite': 0,
-            'roadmap': 0
+            'roadmap': 0,
+            'overview': 0
         }
         
         for file_path in route_folder.glob("*"):
@@ -934,6 +1074,8 @@ class GoogleMapsImageDownloader:
                     image_types['satellite'] += 1
                 elif 'roadmap' in file_path.name:
                     image_types['roadmap'] += 1
+                elif 'overview' in file_path.name:
+                    image_types['overview'] += 1
         
         return {
             'exists': True,
@@ -943,7 +1085,7 @@ class GoogleMapsImageDownloader:
             'folder_path': str(route_folder)
         }
     
-    # Additional methods for API key management (only used when multiple keys are configured)
+    # Additional methods for API key management
     
     def add_api_key(self, api_key: str, monthly_limit: int = 50000, notes: str = None):
         """Add a new API key to the system"""
@@ -1041,51 +1183,85 @@ class GoogleMapsImageDownloader:
             return report
 
 
-# ============================================================================
-# OPTIONAL EXAMPLE USAGE - FOR TESTING ONLY
-# ============================================================================
-if __name__ == "__main__":
-    # Example: Multiple API keys can be provided
-    api_keys = [
-        os.getenv('GOOGLE_MAPS_API_KEY_1'),
-        os.getenv('GOOGLE_MAPS_API_KEY_2'),
-        os.getenv('GOOGLE_MAPS_API_KEY_3'),
-    ]
+# # ============================================================================
+# # EXAMPLE USAGE - COST OPTIMIZED
+# # ============================================================================
+# if __name__ == "__main__":
+#     # Example: Multiple API keys can be provided
+#     api_keys = [
+#         os.getenv('GOOGLE_MAPS_API_KEY_1'),
+#         os.getenv('GOOGLE_MAPS_API_KEY_2'),
+#         os.getenv('GOOGLE_MAPS_API_KEY_3'),
+#     ]
     
-    # Filter out None values
-    api_keys = [k for k in api_keys if k]
+#     # Filter out None values
+#     api_keys = [k for k in api_keys if k]
     
-    # Or load from comma-separated environment variable
-    if not api_keys:
-        multi_keys = os.getenv('GOOGLE_MAPS_API_KEYS', '')
-        if multi_keys:
-            api_keys = [k.strip() for k in multi_keys.split(',') if k.strip()]
+#     # Or load from comma-separated environment variable
+#     if not api_keys:
+#         multi_keys = os.getenv('GOOGLE_MAPS_API_KEYS', '')
+#         if multi_keys:
+#             api_keys = [k.strip() for k in multi_keys.split(',') if k.strip()]
     
-    # For backward compatibility - also works with single key
-    if not api_keys:
-        single_key = os.getenv('GOOGLE_MAPS_API_KEY')
-        if single_key:
-            api_keys = [single_key]
+#     # For backward compatibility - also works with single key
+#     if not api_keys:
+#         single_key = os.getenv('GOOGLE_MAPS_API_KEY')
+#         if single_key:
+#             api_keys = [single_key]
     
-    downloader = GoogleMapsImageDownloader(api_key=api_keys if len(api_keys) > 1 else (api_keys[0] if api_keys else None))
+#     downloader = GoogleMapsImageDownloader(api_key=api_keys if len(api_keys) > 1 else (api_keys[0] if api_keys else None))
     
-    # Test download
-    turn_data = {
-        '_id': '12345',
-        'latitude': 19.0760,
-        'longitude': 72.8777,
-        'riskScore': 8,
-        'turnAngle': 95
-    }
+#     # Configure cost optimization
+#     downloader.enable_metadata_check = True      # Check availability first
+#     downloader.prioritize_high_risk = True       # Only download for high-risk points
+#     downloader.risk_threshold = 7                # Minimum risk score
+#     downloader.max_markers_per_map = 100        # Max markers on overview
     
-    images = downloader.download_turn_images(turn_data, 'test_route')
-    print(f"Downloaded images: {images}")
+#     # Example route data with multiple risk points
+#     example_route_data = {
+#         'route': {
+#             '_id': 'test_route_123',
+#             'fromCoordinates': {'latitude': 19.0760, 'longitude': 72.8777},
+#             'toCoordinates': {'latitude': 19.1176, 'longitude': 72.9060},
+#             'routePoints': [
+#                 {'latitude': 19.0760, 'longitude': 72.8777},
+#                 {'latitude': 19.0900, 'longitude': 72.8900},
+#                 {'latitude': 19.1176, 'longitude': 72.9060}
+#             ]
+#         },
+#         'collections': {
+#             'sharp_turns': [
+#                 {'_id': '1', 'latitude': 19.0850, 'longitude': 72.8850, 'riskScore': 9, 'turnAngle': 95},
+#                 {'_id': '2', 'latitude': 19.0950, 'longitude': 72.8950, 'riskScore': 7, 'turnAngle': 80},
+#                 {'_id': '3', 'latitude': 19.1050, 'longitude': 72.9000, 'riskScore': 5, 'turnAngle': 60},  # Will be skipped
+#             ],
+#             'blind_spots': [
+#                 {'_id': '1', 'latitude': 19.0800, 'longitude': 72.8800, 'riskScore': 8, 'spotType': 'intersection'},
+#                 {'_id': '2', 'latitude': 19.1000, 'longitude': 72.8980, 'riskScore': 6, 'spotType': 'curve'},  # Will be skipped
+#             ],
+#             'emergency_services': [
+#                 {'serviceType': 'hospital', 'latitude': 19.0900, 'longitude': 72.8850}
+#             ]
+#         }
+#     }
     
-    # Get usage statistics (only works with multiple keys)
-    if len(api_keys) > 1:
-        stats = downloader.get_usage_stats()
-        print(f"API Usage Stats: {json.dumps(stats, indent=2)}")
-        
-        # Generate usage report
-        report = downloader.get_usage_report()
-        print(f"Usage Report: {json.dumps(report, indent=2)}")
+#     # Use smart download strategy
+#     print("\n💰 COST-OPTIMIZED IMAGE DOWNLOAD STRATEGY")
+#     print("="*50)
+    
+#     result = downloader.download_route_images_smart(
+#         example_route_data, 
+#         'test_route_123',
+#         max_individual_downloads=5  # Limit individual downloads
+#     )
+    
+#     print(f"\n✅ Download complete!")
+#     print(f"📊 Statistics: {json.dumps(result['statistics'], indent=2)}")
+    
+#     # Get usage statistics
+#     stats = downloader.get_usage_stats()
+#     print(f"\n📈 API Usage Stats: {json.dumps(stats, indent=2)}")
+    
+#     # Get cache statistics
+#     cache_stats = downloader.get_cache_stats('test_route_123')
+#     print(f"\n💾 Cache Stats: {json.dumps(cache_stats, indent=2)}")

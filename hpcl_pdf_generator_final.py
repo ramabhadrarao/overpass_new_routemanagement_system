@@ -15,21 +15,17 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
-
 import requests
 import tempfile
-
+import statistics
+from collections import defaultdict
 from PIL import Image
 from io import BytesIO
-
 import folium
 from folium import plugins
-
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-
 from staticmap import StaticMap, CircleMarker, Line
-
 from google_maps_image_downloader import GoogleMapsImageDownloader
 
 OVERPASS_API_URL = os.getenv('OVERPASS_API_URL', 'http://43.250.40.133:8080/api/interpreter')
@@ -167,6 +163,7 @@ class HPCLDynamicPDFGenerator:
     
     def calculate_route_statistics(self, collections: Dict[str, List]) -> Dict[str, Any]:
         """Calculate comprehensive route statistics"""
+        
         stats = {
             'total_data_points': 0,
             'risk_analysis': {
@@ -180,6 +177,7 @@ class HPCLDynamicPDFGenerator:
                 'hospitals': 0,
                 'police_stations': 0,
                 'fire_stations': 0,
+                'amenity':0,
                 'sharp_turns': 0,
                 'blind_spots': 0,
                 'accident_areas': 0
@@ -225,6 +223,8 @@ class HPCLDynamicPDFGenerator:
                         stats['safety_metrics']['police_stations'] += 1
                     elif service_type == 'fire_station':
                         stats['safety_metrics']['fire_stations'] += 1
+                    elif service_type == 'amenity':
+                        stats['safety_metrics']['amenity'] += 1
                 
                 elif collection_name == 'sharp_turns':
                     stats['safety_metrics']['sharp_turns'] += 1
@@ -245,11 +245,11 @@ class HPCLDynamicPDFGenerator:
         
         # Calculate averages
         if all_risk_scores:
-            stats['risk_analysis']['avg_risk_score'] = sum(all_risk_scores) / len(all_risk_scores)
-            stats['risk_analysis']['max_risk_score'] = max(all_risk_scores)
+            stats['risk_analysis']['avg_risk_score'] = (sum(all_risk_scores) / len(all_risk_scores))/2
+            stats['risk_analysis']['max_risk_score'] = (max(all_risk_scores))/2
         
         return stats
-    
+
     def assess_data_quality(self, total_points: int) -> Dict[str, Any]:
         """Assess data quality based on total data points"""
         if total_points >= 100:
@@ -263,13 +263,23 @@ class HPCLDynamicPDFGenerator:
         else:
             return {'level': 'insufficient', 'score': 20}
     
+    def calculate_network_level(self, avg_score: float) -> str:
+        """Calculate risk level from average score"""
+        if avg_score > 4:
+            return 'GOOD'
+        elif avg_score >= 2:
+            return 'MODERATE'
+        elif avg_score < 2:
+            return 'POOR'
+
+
     def calculate_risk_level(self, avg_score: float) -> str:
         """Calculate risk level from average score"""
-        if avg_score >= 8:
+        if avg_score >= 4:
             return 'CRITICAL'
-        elif avg_score >= 6:
+        elif avg_score >= 3:
             return 'HIGH'
-        elif avg_score >= 4:
+        elif avg_score >= 2:
             return 'MEDIUM'
         else:
             return 'LOW'
@@ -283,9 +293,9 @@ class HPCLDynamicPDFGenerator:
         mins = minutes % 60
         
         if hours > 0:
-            return f"{hours} hours {mins} mins"
+            return f"{int(hours)} hours {int(mins)} mins"
         else:
-            return f"{mins} minutes"
+            return f"{int(mins)} minutes"
     
     def get_risk_color(self, level: str):
         """Get color based on risk/quality level"""
@@ -302,6 +312,17 @@ class HPCLDynamicPDFGenerator:
         }
         return color_map.get(level.lower(), self.colors.SECONDARY)
     
+    def get_network_color(self, level: str):
+        """Get color based on network/quality level"""
+        color_map = {
+            'excellent': self.colors.SUCCESS,
+            'good': self.colors.SUCCESS,
+            'moderate': self.colors.WARNING,
+            'poor': self.colors.DANGER
+        }
+        return color_map.get(level.lower(), self.colors.SECONDARY)
+    
+
     def add_page_header(self, canvas_obj, title: str, subtitle: str = "",page_num: Optional[int] = None):
         """Add consistent page header"""
         # Header background
@@ -312,35 +333,67 @@ class HPCLDynamicPDFGenerator:
         canvas_obj.rect(0, self.page_height - 60, self.page_width, 60, fill=1)
         
         canvas_obj.setFillColor(self.colors.WHITE)
-        canvas_obj.setFont("Helvetica-Bold", 14)
+        canvas_obj.setFont("Helvetica-Bold", 13)
         canvas_obj.drawString(self.margin, self.page_height - 35, title)
-        
-
-
+    
         if subtitle:
             canvas_obj.setFont("Helvetica", 10)
             canvas_obj.drawString(self.margin, self.page_height - 50, subtitle)
 
-        
         canvas_obj.setFont("Helvetica", 10)
-        date_str = datetime.now().strftime('%B %d, %Y')
+        date_str = datetime.now().strftime('%b %d, %Y')
         canvas_obj.drawRightString(self.page_width - self.margin, self.page_height - 35, f"Page {page_num}")
         canvas_obj.drawRightString(self.page_width - self.margin, self.page_height - 50, date_str)
         canvas_obj.restoreState()
+    
     def show_new_page(self, canvas_obj):
         """Show new page and increment page counter"""
         canvas_obj.showPage()
         self.current_page_number += 1
+    
+    # def add_logo(self, canvas_obj):
+    #     """Add HPCL logo"""
+    #     try:
+    #         logo_url = 'HPCL-logo.png'
+    #         response = requests.get(logo_url)
+    #         response.raise_for_status()
+    #         logo_image = Image.open(io.BytesIO(response.content))
+    #         canvas_obj.drawImage(logo_image, 50, self.page_height - 100, width=50, height=50, mask='auto')
+    #     except Exception as e:
+    #         logger.error(f"Error loading logo: {e}")
+    #         canvas_obj.setFillColor(self.colors.WHITE)
+    #         canvas_obj.setFont("Helvetica-Bold", 20)
+    #         canvas_obj.drawString(50, self.page_height - 80, "HPCL")
     def add_logo(self, canvas_obj):
-        """Add HPCL logo"""
+        """Add HPCL logo from local file"""
         try:
-            logo_url = 'https://i.ibb.co/pWf1tXF/HPCL-logo.png'
-            response = requests.get(logo_url)
-            response.raise_for_status()
-            logo_image = Image.open(io.BytesIO(response.content))
-            canvas_obj.drawImage(logo_image, 50, self.page_height - 100, width=50, height=50, mask='auto')
+            # Try multiple possible locations for the logo
+            possible_paths = [
+                'HPCL-logo.png',  # Same directory
+                'images/HPCL-logo.png',  # images subdirectory
+                'assets/HPCL-logo.png',  # assets subdirectory
+                '../HPCL-logo.png',  # Parent directory
+                os.path.join(os.path.dirname(__file__), 'HPCL-logo.png'),  # Script directory
+            ]
+            
+            logo_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    logo_path = path
+                    logger.info(f"Found logo at: {path}")
+                    break
+            
+            if logo_path:
+                # Draw image from local file
+                canvas_obj.drawImage(logo_path, 50, self.page_height - 100, width=60, height=70, mask='auto')
+            else:
+                # Log all attempted paths for debugging
+                logger.warning(f"Logo not found in any of these locations: {possible_paths}")
+                raise FileNotFoundError("Logo not found")
+                
         except Exception as e:
             logger.error(f"Error loading logo: {e}")
+            # Fallback: Draw HPCL text
             canvas_obj.setFillColor(self.colors.WHITE)
             canvas_obj.setFont("Helvetica-Bold", 20)
             canvas_obj.drawString(50, self.page_height - 80, "HPCL")
@@ -399,15 +452,9 @@ class HPCLDynamicPDFGenerator:
             (f"Total Distance: {route.get('totalDistance', 0)} km", 15),
             ("", 5),  # Empty line with spacing
             (f"Estimated Duration: {self.format_duration(route.get('estimatedDuration', 0))}", 15),
-            ("", 5),  # Empty line with spacing
-            # (f"Route Terrain: {route.get('terrain', 'Mixed')}", 15),  # Now as tuple with spacing
-            # ("", 5),  # Empty line with spacing
-            # (f"Total Data Points Analyzed: {stats['total_data_points']}", 15),  # Now as tuple with spacing
-            # ("", 5),  # Empty line with spacing
-            # (f"Critical Risk Points: {stats['risk_analysis']['critical_points']}", 15),  # Now as tuple with spacing
-            # ("", 5),  # Empty line with spacing
+            ("", 5),
             (f"Analysis Date: {datetime.now().strftime('%B %d, %Y')}", 15),
-            ("", 5),  # Empty line with spacing
+            ("", 5), 
             (f"Report Generated: {datetime.now().strftime('%I:%M %p')}", 15)
         ]
         
@@ -548,14 +595,15 @@ class HPCLDynamicPDFGenerator:
         stats = route_data['statistics']
         
         # Calculate risk scores based on actual data
-        road_conditions_score = min(10, len([r for r in collections['road_conditions'] if r.get('surfaceQuality') in ['poor', 'critical']]) * 0.5 + 2)
-        accident_score = min(10, len(collections['accident_areas']) * 0.3 + 1)
-        sharp_turns_score = min(10, len([t for t in collections['sharp_turns'] if t.get('riskScore', 0) >= 6]) * 0.4 + 1)
-        blind_spots_score = min(10, len([b for b in collections['blind_spots'] if b.get('riskScore', 0) >= 6]) * 0.5 + 1)
-        traffic_score = min(10, len([t for t in collections['traffic_data'] if t.get('congestionLevel') in ['heavy', 'severe']]) * 0.3 + 1)
-        weather_score = min(10, len([w for w in collections['weather_conditions'] if w.get('riskScore', 0) >= 6]) * 0.4 + 2)
-        emergency_score = max(1, 10 - len(collections['emergency_services']) * 0.1)
-        network_score = min(10, len([n for n in collections['network_coverage'] if n.get('isDeadZone', False)]) * 0.8 + 1)
+        road_conditions_score = round(min(10, len([r for r in collections['road_conditions'] if r.get('surfaceQuality') in ['poor', 'critical']]) * 0.5 + 2) / 2, 2)
+        accident_score = round(min(10, len(collections['accident_areas']) * 0.3 + 1) / 2, 2)
+        sharp_turns_score = round(min(10, len([t for t in collections['sharp_turns'] if t.get('riskScore', 0) >= 6]) * 0.4 + 1) / 2, 2)
+        blind_spots_score = round(min(10, len([b for b in collections['blind_spots'] if b.get('riskScore', 0) >= 6]) * 0.5 + 1) / 2, 2)
+        traffic_score = round(min(10, len([t for t in collections['traffic_data'] if t.get('congestionLevel') in ['heavy', 'severe']]) * 0.3 + 1) / 2, 2)
+        weather_score = round(min(10, len([w for w in collections['weather_conditions'] if w.get('riskScore', 0) >= 6]) * 0.4 + 2) / 2, 2)
+        emergency_score = round(max(1, 10 - len(collections['emergency_services']) * 0.1) / 2, 2)
+        amenity_score = round(min(10, len([w for w in collections['emergency_services'] if w.get('riskScore', 0) >= 6]) * 0.4 + 2) / 2, 2)
+        network_score = round(min(10, len([n for n in collections['network_coverage'] if n.get('isDeadZone', False)]) * 0.8 + 1) / 2, 2)
         
         return [
             ("Road Conditions", f"{road_conditions_score:.1f}", self.get_risk_category_text(road_conditions_score)),
@@ -566,15 +614,15 @@ class HPCLDynamicPDFGenerator:
             ("Seasonal Weather Conditions", f"{weather_score:.1f}", self.get_risk_category_text(weather_score)),
             ("Emergency Handling Services", f"{emergency_score:.1f}", self.get_risk_category_text(emergency_score)),
             ("Network Dead/Low Zones", f"{network_score:.1f}", self.get_risk_category_text(network_score)),
+            ("Roadside Amenities", f"{amenity_score:.1f}", self.get_risk_category_text(amenity_score)),
             ("Security & Social Issues", "1.0", "Low Risk")
         ]
-        # Combine scores
     
     def get_risk_category_text(self, score: float) -> str:
         """Convert risk score to category text"""
-        if score >= 7:
+        if score >= 3.5:
             return "High Risk"
-        elif score >= 4:
+        elif score >= 2:
             return "Mild Risk"
         else:
             return "Low Risk"
@@ -588,80 +636,6 @@ class HPCLDynamicPDFGenerator:
         else:
             return self.colors.SUCCESS
     
-
-
-    # Update the create_route_map_page method
-    def create_route_map_page(self, canvas_obj, route_data: Dict[str, Any]):
-        """Create Page 3: Route Map using Overpass API or alternative mapping solutions"""
-        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "Approved Route Map")
-        collections = route_data['collections']
-        route = route_data['route']
-
-        y_pos = self.page_height - 120
-        
-        canvas_obj.setFillColor(self.colors.PRIMARY)
-        canvas_obj.setFont("Helvetica-Bold", 18)
-        canvas_obj.drawString(self.margin, y_pos, "APPROVED ROUTE MAP")
-        y_pos -= 20
-        
-        canvas_obj.setFillColor(self.colors.BLACK)
-        canvas_obj.setFont("Helvetica", 10)
-        canvas_obj.drawString(self.margin, y_pos, "Comprehensive route visualization showing start/end points, critical turns, emergency services,")
-        y_pos -= 20
-        canvas_obj.drawString(self.margin, y_pos, " highway junctions, and potential hazards.")
-        y_pos -= 20
-        
-        try:
-            # Try multiple map generation methods in order of preference
-            map_image_path = None
-            interactive_link = None
-            
-            # Method 1: Try using staticmap library (simplest, no API needed)
-            logger.info("Attempting to generate map using staticmap library...")
-            map_image_path, interactive_link = self.generate_static_map_image(route_data)
-            
-            # Method 2: If staticmap fails, try matplotlib with OSM tiles
-            if not map_image_path or not os.path.exists(map_image_path):
-                logger.info("Staticmap failed, trying matplotlib approach...")
-                map_image_path, interactive_link = self.generate_matplotlib_osm_map(route_data)
-            
-            # Method 3: If still no map, use the existing Overpass implementation
-            if not map_image_path or not os.path.exists(map_image_path):
-                logger.info("Trying Overpass API approach...")
-                map_image_path, interactive_link = self.generate_overpass_route_map(route_data)
-            
-            # Display the map if we have one
-            if map_image_path and os.path.exists(map_image_path):
-                logger.info(f"Map generated successfully: {map_image_path}")
-                # Draw the map image
-                canvas_obj.drawImage(map_image_path, 40, y_pos - 350, width=520, height=350)
-                
-                # Add route statistics overlay
-                self.add_route_statistics_overlay(canvas_obj, route_data, y_pos - 370)
-                
-                # Add interactive link box
-                if interactive_link:
-                    self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
-                
-                y_pos -= 390
-            else:
-                logger.warning("All map generation methods failed, using placeholder")
-                # Fallback to placeholder
-                self.draw_map_placeholder(canvas_obj, route_data, y_pos)
-                y_pos -= 280
-                
-        except Exception as e:
-            logger.error(f"Failed to generate map: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            # Fallback to placeholder
-            self.draw_map_placeholder(canvas_obj, route_data, y_pos)
-            y_pos -= 280
-        
-        y_pos -= 35
-        # Enhanced Map legend with actual counts
-        self.add_enhanced_map_legend(canvas_obj, route_data, y_pos)
-
     # Add these new methods for map generation
 
     def generate_static_map_image(self, route_data: Dict[str, Any]) -> tuple:
@@ -1095,6 +1069,7 @@ class HPCLDynamicPDFGenerator:
             import traceback
             logger.error(traceback.format_exc())
             return None, None
+    
     def _add_scale_bar(self, ax, lats, lons):
         """Add a scale bar to the map"""
         try:
@@ -1135,6 +1110,7 @@ class HPCLDynamicPDFGenerator:
                     
         except Exception as e:
             logger.warning(f"Could not add scale bar: {e}")
+    
     def _add_critical_points_to_map(self, ax, collections: Dict[str, List]):
         """Add critical points to the matplotlib map"""
         try:
@@ -1244,9 +1220,10 @@ class HPCLDynamicPDFGenerator:
         except ImportError:
             logger.error("Folium not installed. Using matplotlib fallback.")
             return self.generate_overpass_route_map(route_data)
+    
     def create_route_map_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create Page 3: Route Map using Overpass API or alternative mapping solutions"""
-        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "Approved Route Map")
+        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
         collections = route_data['collections']
         route = route_data['route']
 
@@ -1292,9 +1269,9 @@ class HPCLDynamicPDFGenerator:
                 # Add route statistics overlay
                 self.add_route_statistics_overlay(canvas_obj, route_data, y_pos - 370)
                 
-                # Add interactive link box
-                if interactive_link:
-                    self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
+                # # Add interactive link box
+                # if interactive_link:
+                #     self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
                 
                 y_pos -= 390
             else:
@@ -1314,6 +1291,7 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 35
         # Enhanced Map legend with actual counts
         self.add_enhanced_map_legend(canvas_obj, route_data, y_pos)
+    
     def generate_static_map_image(self, route_data: Dict[str, Any]) -> tuple:
         """Generate a static map image using staticmap library (no API key needed)"""
         try:
@@ -1649,6 +1627,7 @@ class HPCLDynamicPDFGenerator:
             
         except Exception as e:
             logger.warning(f"Could not add info box: {e}")
+    
     def add_osm_link_box(self, canvas_obj, interactive_link: str, y_pos: int):
         """Add clickable link box for OpenStreetMap"""
         if not interactive_link:
@@ -1663,7 +1642,7 @@ class HPCLDynamicPDFGenerator:
         # Text settings
         canvas_obj.setFillColor(self.colors.WHITE)
         canvas_obj.setFont("Helvetica-Bold", 10)
-        canvas_obj.drawString(50, y_pos + 7, "🔗 INTERACTIVE MAP:")
+        canvas_obj.drawString(50, y_pos + 7, "INTERACTIVE MAP:")
 
         canvas_obj.setFont("Helvetica", 9)
         canvas_obj.drawString(180, y_pos + 7, "Click to open route in OpenStreetMap →")
@@ -2054,11 +2033,9 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 10
         canvas_obj.setFillColor("#808080")
         canvas_obj.setFont("Helvetica-Oblique", 9)
-        canvas_obj.drawString(self.margin+10, y_pos, "Ensure all regulatory requirements are met before journey commencement.Route includes major highways: NH-344,")
+        canvas_obj.drawString(self.margin+10, y_pos, " Ensure all applicable local, state, and national transport regulations are met prior to journey commencement, ")
         y_pos -= 15
-        canvas_obj.drawString(self.margin, y_pos, "NH-709.Rural terrain requires attention to livestock and agricultural vehicles.Speed limits may vary based")
-        y_pos -= 15
-        canvas_obj.drawString(self.margin, y_pos, "Speed limits may vary based on local regulations and road conditions.")
+        canvas_obj.drawString(self.margin+15, y_pos, "including permits, documentation, and vehicle checks.")
         y_pos -= 30
 
     def add_regulatory_overview_table(self, canvas_obj, route_data: Dict[str, Any], y_pos: int):
@@ -2277,6 +2254,7 @@ class HPCLDynamicPDFGenerator:
 
     def create_elevation_terrain_analysis_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create page for Elevation & Terrain Analysis"""
+        callections = route_data['collections']
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)", "")
 
         y_pos = self.page_height - 100  # Starting position after header
@@ -2296,18 +2274,20 @@ class HPCLDynamicPDFGenerator:
             ["Fuel Consumption Impact", "Minimal - No gradient resistance; consistent throttle level"],
             ["Significant Changes Detected", "None - No sudden elevation gain/loss >5 m/km observed"]
         ]
-        
+        traffic_score = round(min(10, len([t for t in callections['traffic_data'] if t.get('congestionLevel') in ['heavy', 'severe']]) * 0.3 + 1) / 2, 2)
+        risk_level = self.calculate_risk_level(traffic_score)
         y_pos = self.create_simple_table(
             canvas_obj=canvas_obj,
-            title="COMPREHENSIVE ELEVATION & TERRAIN ANALYSIS - LOW RISK (Risk Score: 1)",
+            title= f"COMPREHENSIVE ELEVATION & TERRAIN ANALYSIS - LOW RISK (Risk Score: {traffic_score:.1f})",
             headers=headers,
             data=elevation_data,
             start_x=50,
             start_y=y_pos,
             col_widths=col_widths,
-            title_color=self.colors.SUCCESS,
+            title_color=self.get_risk_color(risk_level.lower()),
             header_color=self.colors.WHITE,
-            text_color=self.colors.WHITE # Using black text for better readability
+            text_color=self.colors.WHITE,
+            title_font_size=11
         )
 
         y_pos -= 30
@@ -2496,13 +2476,15 @@ class HPCLDynamicPDFGenerator:
             ["Worst Congestion Areas", f"{worst_congestion_percent}% of the route"]
         ]
 
+        emergency_score = round(max(1, 10 - len(collections['emergency_services']) * 0.1) / 2, 2)
+        risk_level = self.calculate_risk_level(emergency_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            "COMPREHENSIVE TRAFFIC ANALYSIS LOW RISK (Risk Score: 1)",
+            f"COMPREHENSIVE TRAFFIC ANALYSIS LOW RISK (Risk Score: {emergency_score:.1f})",
             traffic_headers,
             traffic_data,50, y_pos,
             [250, 250],
-            title_color=self.colors.SUCCESS,
+            title_color= self.get_risk_color(risk_level.lower()),
             text_color=self.colors.WHITE,
             header_color=self.colors.WHITE
         )
@@ -2955,7 +2937,7 @@ class HPCLDynamicPDFGenerator:
         """Create page for seasonal road conditions and traffic patterns"""
 
         road_conditions = self.remove_duplicate_coordinates(route_data['collections'].get("road_conditions", []))
-        weather_data = self.remove_duplicate_coordinates(route_data['collections'].get("weather_conditions", []))
+        weather_data = route_data['collections'].get("weather_conditions", [])  # Don't remove duplicates here!
 
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
         y_pos = self.page_height - 100
@@ -2969,48 +2951,121 @@ class HPCLDynamicPDFGenerator:
         ]
         col_widths = [70, 100, 40, 150, 150]
 
-        seasonal_rows = []
-        for road in road_conditions:
-            lat = road.get("latitude", 0.0)
-            lon = road.get("longitude", 0.0)
-            road_type = road.get("roadType", "Unknown")
+        # Group weather data by location and season
+        location_season_data = {}
+        for weather in weather_data:
+            lat = round(weather.get("latitude", 0), 4)
+            lon = round(weather.get("longitude", 0), 4)
+            season = weather.get("season", "Unknown").lower()
+            location_key = f"{lat},{lon}"
             
-            # Match closest weather record (you can use more precise matching if needed)
-            weather = weather_data[0] if weather_data else {}
-
-            season = weather.get("season", "Unknown")
-            risk_score = int(weather.get("riskScore", 0))
-            condition = weather.get("weatherCondition", "Unknown")
-            temperature = float(weather.get("averageTemperature", 0.0))
-            monsoon_risk = weather.get("monsoonRisk", 0)
-            impact = weather.get("drivingConditionImpact", "Unknown")
+            if location_key not in location_season_data:
+                location_season_data[location_key] = {}
             
-            if temperature >= 95:
-                challenges = "High temperatures → vehicle overheating, tire blowouts"
-                caution = "Pre-check cooling systems and carry extra water."
-            elif temperature >= 80:
-                challenges = " Warm: Possible discomfort or moderate risk"
-                caution = "Pre-check cooling systems and carry extra water."
-            elif monsoon_risk >= 5:
-                challenges = "Flood-prone zones, reduced traction"
-                caution = "Slow down in rain, maintain distance."
-            elif impact.lower() == "minimal":
-                challenges = "No significant challenges"
-                caution = "Standard precautions apply"
-            else:
-                challenges = "Extreme heat exposure, limited shade, dust storms"
-                caution = "Plan travel during cooler hours, carry sun protection"
+            location_season_data[location_key][season] = weather
 
-            coord = f"{lat:.6f}, {lon:.6f} ({road_type}) "
-            map_link = f"https://www.google.com/maps?q={lat}%2C{lon}"
-            if risk_score >= 7:
-                seasonal_rows.append([
-                    f"{season.capitalize()} - ({condition})",
-                    coord,
-                    map_link,
-                    challenges,
-                    caution
-                ])
+        # Create rows showing seasonal variations
+        all_rows = []
+        
+        # Process each unique location
+        for location_key, seasons_data in location_season_data.items():
+            lat, lon = map(float, location_key.split(','))
+            
+            # Find matching road condition for this location
+            matching_road = None
+            for road in road_conditions:
+                road_lat = round(road.get("latitude", 0), 4)
+                road_lon = round(road.get("longitude", 0), 4)
+                if road_lat == lat and road_lon == lon:
+                    matching_road = road
+                    break
+            
+            road_type = matching_road.get("roadType", "Highway") if matching_road else "Highway"
+            
+            # Create entries for each season at this location
+            for season in ['summer', 'monsoon', 'winter', 'spring', 'autumn']:
+                if season in seasons_data:
+                    weather = seasons_data[season]
+                    
+                    risk_score = int(weather.get("riskScore", 0))
+                    condition = weather.get("weatherCondition", "Unknown")
+                    temperature = float(weather.get("averageTemperature", 0.0))
+                    humidity = float(weather.get("humidity", 0.0))
+                    wind_speed = float(weather.get("windSpeedKmph", 0.0))
+                    visibility = weather.get("visibilityKm", 10)
+                    
+                    # Determine challenges based on seasonal conditions
+                    if season == "summer":
+                        if temperature >= 35:
+                            challenges = "Extreme heat (>35°C), tire pressure issues, engine overheating"
+                            caution = "Travel early morning/late evening, check coolant levels"
+                        elif temperature >= 30:
+                            challenges = f"High temperature ({temperature:.1f}°C), dust, glare"
+                            caution = "Carry water, use sun protection, check tire pressure"
+                        else:
+                            challenges = "Moderate heat, normal conditions"
+                            caution = "Standard summer precautions"
+                    
+                    elif season == "monsoon":
+                        if humidity >= 85:
+                            challenges = f"Heavy moisture ({humidity:.1f}%), waterlogging risk, poor visibility"
+                            caution = "Use wipers, reduce speed, avoid flooded areas"
+                        else:
+                            challenges = "Wet roads, moderate rain expected"
+                            caution = "Maintain safe distance, check brakes"
+                    
+                    elif season == "winter":
+                        if temperature <= 15:
+                            challenges = f"Cold conditions ({temperature:.1f}°C), morning fog likely"
+                            caution = "Use fog lights, warm up engine, reduce speed"
+                        else:
+                            challenges = "Cool weather, possible mist"
+                            caution = "Check visibility, use headlights"
+                    
+                    else:  # spring/autumn
+                        challenges = "Transitional weather, variable conditions"
+                        caution = "Stay alert for weather changes"
+
+                    coord = f"{lat:.4f}, {lon:.4f} ({road_type})"
+                    map_link = f"https://www.google.com/maps?q={lat},{lon}"
+
+                    all_rows.append([
+                        f"{season.capitalize()} - {condition.replace('_', ' ').title()}",
+                        coord,
+                        map_link,
+                        challenges,
+                        caution,
+                        risk_score
+                    ])
+
+        # Sort rows to show seasonal progression for each location
+        all_rows.sort(key=lambda x: (
+            x[1],  # Group by location
+            ['summer', 'monsoon', 'autumn', 'winter', 'spring'].index(x[0].split(' - ')[0].lower()) 
+            if x[0].split(' - ')[0].lower() in ['summer', 'monsoon', 'autumn', 'winter', 'spring'] else 99
+        ))
+
+        # Filter high risk or show variety
+        high_risk_rows = [row[:-1] for row in all_rows if row[-1] >= 7]
+        
+        if not high_risk_rows:
+            # If no high risk, show at least one entry per season
+            seasonal_rows = []
+            seen_seasons = set()
+            
+            # First pass: get one of each season
+            for row in all_rows:
+                season = row[0].split(' - ')[0].lower()
+                if season not in seen_seasons and len(seasonal_rows) < 15:
+                    seasonal_rows.append(row[:-1])
+                    seen_seasons.add(season)
+            
+            # Second pass: add more variety if space allows
+            for row in all_rows:
+                if row[:-1] not in seasonal_rows and len(seasonal_rows) < 15:
+                    seasonal_rows.append(row[:-1])
+        else:
+            seasonal_rows = high_risk_rows[:15]  # Limit rows
 
         if seasonal_rows:
             y_pos = self.create_simple_table_with_link(
@@ -3022,13 +3077,13 @@ class HPCLDynamicPDFGenerator:
                 start_y=y_pos,
                 col_widths=col_widths,
                 title_bg_color=self.colors.WHITE,
-                header_color = "#ADD8E6",
+                header_color="#ADD8E6",
                 title_text_color=self.colors.PRIMARY,
                 hyper_link=True,
                 hyper_link_col_index=2,
                 hyper_link_view_text="view"
             )
-        
+
         # Weather-related accident-prone areas
         y_pos -= 40
         if y_pos < 300:
@@ -3043,13 +3098,17 @@ class HPCLDynamicPDFGenerator:
 
         headers = ["Area", "Weather Risk", "Risk Type", "Recommended Solution"]
         col_widths = [150, 80, 80, 200]
+        route = route_data['route']
+        data = ", ".join(route.get('majorHighways', ['Not specified'])[:2])
+        
+        # Create season-specific hazards
         weather_hazards = [
-            ["NH-344 (Ghata Village)", "Extreme Heat", "Tire Blowouts", "Shade shelters, road resurfacing"],
-            ["NH-709 (Ambeta)", "Fog", "Low Visibility", "Fog lights, reflective signs"],
-            ["Putha Village Stretch", "Frost", "Skidding", "Apply salt/sand, use winter tires"],
-            ["Oil Terminal Junctions", "Rain/Fog", "Poor Visibility", "Better signage, signalization"],
-            ["Moti Filling Station Access", "Rain/Fog", "Slippery Surfaces", "Drainage improvement, widen shoulders"]
+            [f"{data}", "Summer Heat", "Tire Blowouts", "Shade shelters, road resurfacing"],
+            ["Route Segments", "Monsoon Rain", "Hydroplaning", "Better drainage, grooved pavement"],
+            ["Oil Terminal Junctions", "Winter Fog", "Poor Visibility", "Fog lights, reflective markers"],
+            ["Urban Sections", "Dust Storms", "Visibility Loss", "Wind barriers, warning systems"]
         ]
+        
         y_pos = self.create_simple_table(
             canvas_obj,
             "",
@@ -3463,7 +3522,8 @@ class HPCLDynamicPDFGenerator:
         if network_data:
             total_points = len(network_data)
             dead_zones = len([n for n in network_data if n.get('isDeadZone', False)])
-            weak_signal = len([n for n in network_data if n.get('signalStrength', 10) < 4])
+            # Only count as weak signal if not a dead zone and signal < 4
+            weak_signal = len([n for n in network_data if not n.get('isDeadZone', False) and n.get('signalStrength', 10) < 4])
             good_coverage = total_points - dead_zones - weak_signal
             coverage_score = ((good_coverage / total_points) * 100) if total_points > 0 else 0
         
@@ -3500,8 +3560,8 @@ class HPCLDynamicPDFGenerator:
             unique_medical_facilities = self.remove_duplicate_coordinates(medical_facilities)
 
             medical_data = sorted(
-                [n for n in unique_medical_facilities if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
-                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                [n for n in unique_medical_facilities if n.get("distanceFromStartKm", 0) >= 1.0],
+                key=lambda x: x.get("distanceFromStartKm", 0))
             
             headers = ["id", "Facility Name", "Address", "From Supply (km)","From Customer (km)","Coordinates", "Link", "Phone"]
             col_widths = [20, 110, 140, 50, 58, 58, 30, 80]
@@ -3511,16 +3571,21 @@ class HPCLDynamicPDFGenerator:
                 latitude = facility.get('latitude',0)
                 longitude = facility.get('longitude',0)
                 maps_link =  f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                table_data.append([
-                    str(i + 1),
-                    facility.get('name', 'Unknown'),
-                    facility.get('address', 'Not specified'),
-                    f"{facility.get('distanceFromStartKm', 0):.1f}",
-                    f"{facility.get('distanceFromEndKm', 0):.1f}",
-                    f"{latitude:.6f}, {longitude:.6f}",
-                    maps_link,
-                    facility.get('phoneNumber', 'N/A')
-                ])
+                name = (facility.get('name') or "").strip()
+                if name != "" and name != "Unknown":
+                    address = facility.get('address', '').strip()
+                    if address == '' or address == ',':
+                        address = 'Not Available'
+                    table_data.append([
+                        str(i + 1),
+                        name,
+                        address,
+                        f"{facility.get('distanceFromStartKm', 0):.1f}",
+                        f"{facility.get('distanceFromEndKm', 0):.1f}",
+                        f"{latitude:.6f}, {longitude:.6f}",
+                        maps_link,
+                        (facility.get('phoneNumber') or 'N/A')
+                    ])
             
             # This will automatically handle pagination
             y_pos = self.create_simple_table_with_link(
@@ -3540,8 +3605,8 @@ class HPCLDynamicPDFGenerator:
         else:
             canvas_obj.setFillColor(self.colors.SECONDARY)
             canvas_obj.setFont("Helvetica", 12)
-            canvas_obj.drawString(80, y_pos, "No medical facilities data available for this route")   
-  
+            canvas_obj.drawString(80, y_pos, "No medical facilities data available for this route")
+
     def create_law_enforcement_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create Page 6: Law Enforcement & Fire Services with auto-paginated tables"""
         collections = route_data['collections']
@@ -3559,24 +3624,29 @@ class HPCLDynamicPDFGenerator:
         police_stations = [s for s in all_emergency_services if s.get('serviceType') == 'police']
         if police_stations:
             police_sort_data = sorted(
-                [n for n in police_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
-                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                [n for n in police_stations if n.get("distanceFromStartKm", 0) >= 1.0],
+                key=lambda x: x.get("distanceFromStartKm", 0))
             
             police_data = []
             for i, station in enumerate(police_sort_data):
                 latitude = station.get('latitude',0)
                 longitude = station.get('longitude',0)
                 maps_link =  f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                police_data.append([
-                    str(i + 1),
-                    station.get('name', 'Unknown'),
-                    station.get('address', 'Not specified'),
-                    f"{station.get('distanceFromStartKm', 0):.1f}",
-                    f"{station.get('distanceFromEndKm', 0):.1f}",
-                    f"{latitude:.6f}, {longitude:.6f}",
-                    maps_link,
-                    station.get('phoneNumber', 'N/A')
-                ])
+                name = (station.get('name') or '').strip()
+                if name != "" and name != "Unknown":
+                    address = station.get('address', '').strip()
+                    if address == '' or address == ',':
+                        address = 'Not Available'
+                    police_data.append([
+                        str(i + 1),
+                        name,
+                        address,
+                        f"{station.get('distanceFromStartKm', 0):.1f}",
+                        f"{station.get('distanceFromEndKm', 0):.1f}",
+                        f"{latitude:.6f}, {longitude:.6f}",
+                        maps_link,
+                        (station.get('phoneNumber') or 'N/A')
+                    ])
             
             # This will automatically handle pagination
             y_pos = self.create_simple_table_with_link(
@@ -3606,23 +3676,28 @@ class HPCLDynamicPDFGenerator:
         
         if fire_stations:
             fire_sort_data = sorted(
-                    [n for n in fire_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
-                    key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                [n for n in fire_stations if n.get("distanceFromStartKm", 0) >= 1.0],
+                key=lambda x: x.get("distanceFromStartKm", 0))
             fire_data = []
             for i, station in enumerate(fire_sort_data):
                 latitude = station.get('latitude',0)
                 longitude = station.get('longitude',0)
                 maps_link =  f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                fire_data.append([
-                    str(i + 1),
-                    station.get('name', 'Unknown'),
-                    station.get('address', 'Not specified'),
-                    f"{station.get('distanceFromStartKm', 0):.1f}",
-                    f"{station.get('distanceFromEndKm', 0):.1f}",
-                    f"{latitude:.6f}, {longitude:.6f}",
-                    maps_link,
-                    station.get('phoneNumber', 'N/A')
-                ])
+                name = (station.get('name') or '').strip()
+                if name != "" and name != "Unknown":
+                    address = station.get('address', '').strip()
+                    if address == '' or address == ',':
+                        address = 'Not Available'
+                    fire_data.append([
+                        str(i + 1),
+                        name,
+                        address,
+                        f"{station.get('distanceFromStartKm', 0):.1f}",
+                        f"{station.get('distanceFromEndKm', 0):.1f}",
+                        f"{latitude:.6f}, {longitude:.6f}",
+                        maps_link,
+                        (station.get('phoneNumber') or 'N/A')
+                    ])
             
             # This will automatically handle pagination
             y_pos = self.create_simple_table_with_link(
@@ -3652,23 +3727,38 @@ class HPCLDynamicPDFGenerator:
         
         if fuel_stations:
             fuel_sort_data = sorted(
-                    [n for n in fuel_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
-                    key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                [n for n in fuel_stations if n.get("distanceFromStartKm", 0) >= 1.0],
+                key=lambda x: x.get("distanceFromStartKm", 0))
+            
             fuel_data = []
-            for i, station in enumerate(fuel_sort_data):
-                latitude = station.get('latitude',0)
-                longitude = station.get('longitude',0)
-                maps_link =  f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                fuel_data.append([
-                    str(i + 1),
-                    station.get('name', 'Unknown'),
-                    station.get('address', 'Not specified'),
-                    f"{station.get('distanceFromStartKm', 0):.1f}",
-                    f"{station.get('distanceFromEndKm', 0):.1f}",
-                    f"{latitude:.6f}, {longitude:.6f}",
-                    maps_link,
-                    station.get('phoneNumber', 'N/A')
-                ])
+            serial_number = 1 
+
+            for station in fuel_sort_data:
+                name = (station.get('name') or '').strip()
+                name_lower = name.lower()
+
+                if name != "" and name_lower != "unknown" and (
+                    "hp" in name_lower or "hindustan" in name_lower or "hindustan petroleum" in name_lower):
+                    
+                    latitude = station.get('latitude', 0)
+                    longitude = station.get('longitude', 0)
+                    maps_link = f"https://www.google.com/maps?q={latitude}%2C{longitude}"
+                    
+                    address = station.get('address', '').strip()
+                    if address == '' or address == ',':
+                        address = 'Not Available'
+
+                    fuel_data.append([
+                        str(serial_number),
+                        name,
+                        address,
+                        f"{station.get('distanceFromStartKm', 0):.1f}",
+                        f"{station.get('distanceFromEndKm', 0):.1f}",
+                        f"{latitude:.6f}, {longitude:.6f}",
+                        maps_link,
+                        (station.get('phoneNumber') or 'N/A')
+                    ])
+                    serial_number += 1  
 
             y_pos = self.create_simple_table_with_link(
                 canvas_obj,
@@ -3697,23 +3787,28 @@ class HPCLDynamicPDFGenerator:
         
         if education_stations:
             education_sort_data = sorted(
-                [n for n in education_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
-                key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                [n for n in education_stations if n.get("distanceFromStartKm", 0) >= 1.0],
+                key=lambda x: x.get("distanceFromStartKm", 0))
             education_data = []
             for i, station in enumerate(education_sort_data):
                 latitude = station.get('latitude',0)
                 longitude = station.get('longitude',0)
                 maps_link =  f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                education_data.append([
-                    str(i + 1),
-                    station.get('name', 'Unknown'),
-                    station.get('address', 'Not specified'),
-                    f"{station.get('distanceFromStartKm', 0):.1f}",
-                    f"{station.get('distanceFromEndKm', 0):.1f}",
-                    f"{latitude:.6f}, {longitude:.6f}",
-                    maps_link,
-                    station.get('phoneNumber', 'N/A')
-                ])
+                name = (station.get('name') or '').strip()
+                if name != "" and name != "Unknown":
+                    address = station.get('address', '').strip()
+                    if address == '' or address == ',':
+                        address = 'Not Available'
+                    education_data.append([
+                        str(i + 1),
+                        name,
+                        address,
+                        f"{station.get('distanceFromStartKm', 0):.1f}",
+                        f"{station.get('distanceFromEndKm', 0):.1f}",
+                        f"{latitude:.6f}, {longitude:.6f}",
+                        maps_link,
+                        (station.get('phoneNumber') or 'N/A')
+                    ])
             
             # This will automatically handle pagination
             y_pos = self.create_simple_table_with_link(
@@ -3742,23 +3837,28 @@ class HPCLDynamicPDFGenerator:
         
         if food_stations:
             food_sort_data = sorted(
-                    [n for n in food_stations if self.safe_float(n.get("distanceFromStartKm", 0)) >= 1.0],
-                    key=lambda x: self.safe_float(x.get("distanceFromStartKm", 0)))
+                [n for n in food_stations if n.get("distanceFromStartKm", 0) >= 1.0],
+                key=lambda x: x.get("distanceFromStartKm", 0))
             food_data = []
             for i, station in enumerate(food_sort_data):
                 latitude = station.get('latitude',0)
                 longitude = station.get('longitude',0)
                 maps_link =  f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                education_data.append([
-                    str(i + 1),
-                    station.get('name', 'Unknown'),
-                    station.get('address', 'Not specified'),
-                    f"{station.get('distanceFromStartKm', 0):.1f}",
-                    f"{station.get('distanceFromEndKm', 0):.1f}",
-                    f"{latitude:.6f}, {longitude:.6f}",
-                    maps_link,
-                    station.get('phoneNumber', 'N/A')
-                ])
+                name = (station.get('name') or '').strip()
+                if name != "" and name != "Unknown":
+                    address = station.get('address', '').strip()
+                    if address == '' or address == ',':
+                        address = 'Not Available'
+                    education_data.append([
+                        str(i + 1),
+                        name,
+                        address,
+                        f"{station.get('distanceFromStartKm', 0):.1f}",
+                        f"{station.get('distanceFromEndKm', 0):.1f}",
+                        f"{latitude:.6f}, {longitude:.6f}",
+                        maps_link,
+                        (station.get('phoneNumber') or 'N/A')
+                    ])
             
             # This will automatically handle pagination
             y_pos = self.create_simple_table_with_link(
@@ -3783,7 +3883,7 @@ class HPCLDynamicPDFGenerator:
         # NOTES - GENERAL EMERGENCY GUIDELINES FOR PETROLEUM TANKER (Static content)
         if y_pos < 300: 
             self.show_new_page(canvas_obj)
-            self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study", "GENERAL EMERGENCY GUIDELINES")
+            self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
 
         canvas_obj.setFillColor(self.colors.PRIMARY)
@@ -3825,33 +3925,45 @@ class HPCLDynamicPDFGenerator:
         note_text = "Note: These guidelines are mandatory for all petroleum tanker operations. Compliance ensures safety and environmental protection"
         canvas_obj.drawString(self.margin, y_pos, note_text)
 
+
     def create_environmental_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create Page 7: Environmental & Weather Analysis"""
         collections = route_data['collections']
         
         # Page header
-        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis) ", "")
+        self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)", "")
         
         y_pos = self.page_height - 120
         
         # Weather conditions analysis
-        if collections['weather_conditions']:
+        weather_data = collections.get('weather_conditions', [])
+        
+        if weather_data:
+            # Check if there are any high-risk records
+            has_high_risk = any((w.get('riskScore') or 0) >= 7 for w in weather_data)
+
+            # Group weather data by season with high risk filter applied if any exist
+            weather_by_season = {}
+            for weather in weather_data:
+                season = weather.get('season', 'unknown')
+                if season not in weather_by_season:
+                    weather_by_season[season] = []
+                
+                # Include only high risk records if they exist, otherwise include all
+                if has_high_risk:
+                    if (weather.get('riskScore') or 0) >= 7:
+                        weather_by_season[season].append(weather)
+                else:
+                    weather_by_season[season].append(weather)
+
+            # Section header
             canvas_obj.setFillColor(self.colors.INFO)
             canvas_obj.rect(60, y_pos, 480, 25, fill=1)
             canvas_obj.setFillColor(self.colors.WHITE)
             canvas_obj.setFont("Helvetica-Bold", 12)
-            canvas_obj.drawString(80, y_pos + 8, "🌤️ SEASONAL WEATHER CONDITIONS & TRAFFIC PATTERNS")
-            
+            canvas_obj.drawString(80, y_pos + 8, "🌤 SEASONAL WEATHER CONDITIONS & TRAFFIC PATTERNS")
             y_pos -= 30
-            
-            # Group weather data by season
-            weather_by_season = {}
-            for weather in collections['weather_conditions']:
-                season = weather.get('season', 'unknown')
-                if season not in weather_by_season:
-                    weather_by_season[season] = []
-                weather_by_season[season].append(weather)
-            
+
             # Display seasonal patterns
             seasons = ['summer', 'monsoon', 'winter', 'spring']
             season_colors = {
@@ -3860,53 +3972,46 @@ class HPCLDynamicPDFGenerator:
                 'winter': HexColor('#A8C8EC'),
                 'spring': HexColor('#7ED321')
             }
-            
+
             for season in seasons:
-                if season in weather_by_season:
+                if season in weather_by_season and weather_by_season[season]:
+                    season_data = weather_by_season[season]
+
                     # Season header
                     canvas_obj.setFillColor(season_colors.get(season, self.colors.SECONDARY))
                     canvas_obj.rect(60, y_pos, 480, 20, fill=1)
                     canvas_obj.setFillColor(self.colors.WHITE)
                     canvas_obj.setFont("Helvetica-Bold", 10)
                     canvas_obj.drawString(80, y_pos + 6, f"{season.upper()} CONDITIONS")
-                    
                     y_pos -= 25
-                    
-                    # Weather details for this season
-                    season_data = weather_by_season[season]
-                    avg_temp = sum((w.get('averageTemperature') or 25) for w in season_data) / len(season_data) if season_data else 25
-                    avg_risk = sum((w.get('riskScore') or 3) for w in season_data) / len(season_data) if season_data else 3
-                    
-                    # Temperature and risk info
+
+                    # Averages
+                    avg_temp = sum((w.get('averageTemperature') or 25) for w in season_data) / len(season_data)
+                    avg_risk = sum((w.get('riskScore') or 3) for w in season_data) / len(season_data)
+
                     canvas_obj.setFillColor(self.colors.SECONDARY)
                     canvas_obj.setFont("Helvetica", 9)
                     canvas_obj.drawString(80, y_pos, f"Average Temperature: {avg_temp:.1f}°C")
                     canvas_obj.drawString(300, y_pos, f"Weather Risk Score: {avg_risk:.1f}/10")
-                    
                     y_pos -= 15
-                    
-                    # Common conditions
+
                     conditions = [w.get('weatherCondition', 'clear') for w in season_data]
                     most_common = max(set(conditions), key=conditions.count) if conditions else 'clear'
                     canvas_obj.drawString(80, y_pos, f"Typical Conditions: {most_common.title()}")
-                    
-                    # Driver recommendations
+
                     recommendations = self.get_seasonal_recommendations(season, avg_risk)
                     canvas_obj.drawString(300, y_pos, f"Key Precaution: {recommendations}")
-                    
                     y_pos -= 25
-        
+
         # Environmental factors
         y_pos -= 20
-        
         canvas_obj.setFillColor(self.colors.SUCCESS)
         canvas_obj.rect(60, y_pos, 480, 25, fill=1)
         canvas_obj.setFillColor(self.colors.WHITE)
         canvas_obj.setFont("Helvetica-Bold", 12)
         canvas_obj.drawString(80, y_pos + 8, "ENVIRONMENTAL & LOCAL CONSIDERATIONS")
-        
         y_pos -= 30
-        
+
         # Environmental guidelines table
         guidelines = [
             ("Eco-sensitive Areas", "Drive slowly, avoid honking, no littering"),
@@ -3916,19 +4021,18 @@ class HPCLDynamicPDFGenerator:
             ("Noise Sensitivity", "Avoid honking in populated/religious areas"),
             ("Local Regulations", "Follow state-specific restrictions for hazardous cargo")
         ]
-        
+
         for i, (area, guideline) in enumerate(guidelines):
             if i % 2 == 0:
                 canvas_obj.setFillColorRGB(0.95, 0.98, 0.95)
                 canvas_obj.rect(60, y_pos - 18, 480, 18, fill=1)
-            
+
             canvas_obj.setFillColor(self.colors.SECONDARY)
             canvas_obj.setFont("Helvetica-Bold", 9)
             canvas_obj.drawString(80, y_pos - 10, area)
-            
+
             canvas_obj.setFont("Helvetica", 9)
             canvas_obj.drawString(220, y_pos - 10, guideline)
-            
             y_pos -= 18
 
     def get_seasonal_recommendations(self, season: str, risk_score: float) -> str:
@@ -3958,12 +4062,18 @@ class HPCLDynamicPDFGenerator:
         network_data = self.remove_duplicate_coordinates(collections.get('network_coverage', []))
         
         if network_data:
-            # Coverage overview
+            # Coverage overview - Modified to exclude dead zones from weak signal count
             total_points = len(network_data)
             dead_zones = len([n for n in network_data if n.get('isDeadZone', False)])
-            weak_signal = len([n for n in network_data if n.get('signalStrength', 10) < 4])
+            # Only count as weak signal if not a dead zone and signal < 4
+            weak_signal = len([n for n in network_data if not n.get('isDeadZone', False) and n.get('signalStrength', 10) < 4])
             good_coverage = total_points - dead_zones - weak_signal
-            coverage_score = ((good_coverage / total_points) * 100) if total_points > 0 else 0
+            # coverage_score = ((good_coverage / total_points) * 100) if total_points > 0 else 0
+            coverage_percentage = ((good_coverage / total_points) * 100) if total_points > 0 else 0
+
+            # Convert percentage to 1-5 rating
+            coverage_score = min(5, max(1, round(coverage_percentage / 20 + 0.5)))
+
             
             # Coverage breakdown table
             coverage_headers = ["Coverage Metric", "Value"] 
@@ -3972,20 +4082,21 @@ class HPCLDynamicPDFGenerator:
             coverage_data = [
                 ["Total Analysis Points", str(total_points)],
                 ["Good Coverage Areas", f"{good_coverage} points ({(good_coverage/total_points*100):.1f}%)"],
-                ["Weak Signal Areas (singnal < 4)", f"{weak_signal} points ({(weak_signal/total_points*100):.1f}%)"],
+                ["Weak Signal Areas (signal < 4)", f"{weak_signal} points ({(weak_signal/total_points*100):.1f}%)"],
                 ["Dead Zones Identified", f"{dead_zones} areas ({(dead_zones/total_points*100):.1f}%)"],
-                ["Overall Coverage Status", "GOOD" if coverage_score > 70 else "MODERATE" if coverage_score > 50 else "POOR"],
+                ["Overall Coverage Status", "GOOD" if coverage_score > 4 else "MODERATE" if coverage_score > 2 else "POOR"],
                 ["Network Reliability", "HIGH" if dead_zones < 3 else "MODERATE" if dead_zones < 6 else "LOW"]
             ]
             
+            risk_level = self.calculate_network_level(coverage_score)
             y_pos = self.create_simple_table(
                 canvas_obj,
-                f"COMPREHENSIVE NETWORK COVERAGE ANALYSIS - {coverage_score:.1f}% Coverage",
+                f"COMPREHENSIVE NETWORK COVERAGE ANALYSIS - {coverage_score:.1f} Coverage",
                 coverage_headers,
                 coverage_data,
                 50, y_pos,
                 coverage_col_widths,
-                title_color=self.colors.DANGER,
+                title_color=self.get_network_color(risk_level.lower()),
                 text_color=self.colors.WHITE,
                 header_color=self.colors.WHITE,
                 max_rows_per_page=10
@@ -3997,10 +4108,11 @@ class HPCLDynamicPDFGenerator:
             signal_headers = ["Signal Quality Level", "Points Count", "Route %", "Status"]
             signal_col_widths = [180, 100, 100, 120]
             
-            weak_signal_bar = len([n for n in network_data if 1 <= n.get('signalStrength', 10) <= 2])
-            fair_signal_bar = len([n for n in network_data if 2 < n.get('signalStrength', 10) <= 3])
-            good_coverage_bar = len([n for n in network_data if 3 < n.get('signalStrength', 10) <= 4])
-            excelent_signal_bar = len([n for n in network_data if n.get('signalStrength', 10) > 4])
+            # Modified to exclude dead zones from all signal strength counts
+            weak_signal_bar = len([n for n in network_data if not n.get('isDeadZone', False) and 1 <= n.get('signalStrength', 10) <= 2])
+            fair_signal_bar = len([n for n in network_data if not n.get('isDeadZone', False) and 2 < n.get('signalStrength', 10) <= 3])
+            good_coverage_bar = len([n for n in network_data if not n.get('isDeadZone', False) and 3 < n.get('signalStrength', 10) <= 4])
+            excelent_signal_bar = len([n for n in network_data if not n.get('isDeadZone', False) and n.get('signalStrength', 10) > 4])
 
             total_records = len(network_data) if network_data else 1
             def get_percentage(count):
@@ -4009,8 +4121,8 @@ class HPCLDynamicPDFGenerator:
             # Prepare final data
             signal_data = [
                 ["No Signal (Dead Zone)", f"{dead_zones}", get_percentage(dead_zones), "Critical"],
-                ["Fair Signal (2-3 bar)", f"{fair_signal_bar}", get_percentage(fair_signal_bar), "Good"],
                 ["Poor Signal (1-2 bar)", f"{weak_signal_bar}", get_percentage(weak_signal_bar), "Attention"],
+                ["Fair Signal (2-3 bar)", f"{fair_signal_bar}", get_percentage(fair_signal_bar), "Good"],
                 ["Good Signal (3-4 bar)", f"{good_coverage_bar}", get_percentage(good_coverage_bar), "Good"],
                 ["Excellent Signal (4+)", f"{excelent_signal_bar}", get_percentage(excelent_signal_bar), "Good"]
             ]
@@ -4046,7 +4158,6 @@ class HPCLDynamicPDFGenerator:
                         "Use satellite communication"
                     ])
                 
-                # This will automatically handle pagination
                 y_pos = self.create_simple_table_with_link(
                     canvas_obj,
                     f"DEAD ZONES - NO CELLULAR SERVICE ({dead_zones} locations)",
@@ -4060,8 +4171,7 @@ class HPCLDynamicPDFGenerator:
                     hyper_link=True,
                     hyper_link_col_index=2
                 )
-                # Communication recommendations (always fits on one page)
-            
+
             if y_pos < 200:  
                 self.show_new_page(canvas_obj)
                 self.add_page_header(canvas_obj, "EMERGENCY COMMUNICATION PLAN", "Communication recommendations")
@@ -4070,7 +4180,8 @@ class HPCLDynamicPDFGenerator:
                 y_pos -= 30
 
             if weak_signal > 0:
-                weak_signal_areas = [n for n in network_data if n.get('signalStrength', 10) < 4]
+                # Modified to exclude dead zones from weak signal areas
+                weak_signal_areas = [n for n in network_data if not n.get('isDeadZone', False) and n.get('signalStrength', 10) < 4]
                 
                 weak_signal_headers = ["id", "Coordinates (GPS)","Link", "Signal Level ", "Recommendation"]
                 weak_signal_col_widths = [20, 120,70, 100, 180]
@@ -4085,7 +4196,7 @@ class HPCLDynamicPDFGenerator:
                         f"{latitude:.6f}, {longitude:.6f}",
                         map_link,
                         "WEAK",
-                        "Download offline maps, use a GPS device, and avoid online services "
+                        "Download offline maps, use a GPS device, and avoid online services"
                     ])
                 
                 y_pos = self.create_simple_table_with_link(
@@ -4111,7 +4222,7 @@ class HPCLDynamicPDFGenerator:
 
         bullet_points_data = [
             f"Route has {dead_zones} dead zones - consider satellite communication device",
-            "Multiple poor coverage areas - download offline maps before travel",
+            f"Route has {weak_signal} weak signal areas - download offline maps before travel",
             "Inform someone of your route and expected arrival time"
         ]
         y_pos = self.draw_title_bullet_section(
@@ -4120,6 +4231,7 @@ class HPCLDynamicPDFGenerator:
             bullet_points_data, y_pos,
             title_color=self.colors.PRIMARY
         )
+        
         # Communication recommendations (always fits on one page)
         if y_pos < 200:  
             self.show_new_page(canvas_obj)
@@ -4156,12 +4268,16 @@ class HPCLDynamicPDFGenerator:
         # Page header
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
         y_pos = self.page_height - 120
-        head_title = "COMPREHENSIVE EMERGENCY PREPAREDNESS: LOW RISK (Risk Score: 1)"
+
+        emergency_score = round(max(1, 10 - len(collections['emergency_services']) * 0.1) / 2, 2)
+        risk_level = self.calculate_risk_level(emergency_score)
+        head_title = f"COMPREHENSIVE EMERGENCY PREPAREDNESS: LOW RISK (Risk Score: {emergency_score})"
         y_pos = self.draw_centered_text_in_box(
             canvas_obj,
             head_title,
             50, y_pos, 500, 35,
-            box_color=self.colors.SUCCESS
+            box_color=self.get_risk_color(risk_level.lower()),
+            text_color=self.colors.WHITE,
             )
         
 
@@ -4172,10 +4288,9 @@ class HPCLDynamicPDFGenerator:
         network_data = self.remove_duplicate_coordinates(collections.get('network_coverage', []))
         
         if network_data:
-            # Coverage overview
             total_points = len(network_data)
             dead_zones = len([n for n in network_data if n.get('isDeadZone', False)])
-            weak_signal = len([n for n in network_data if n.get('signalStrength', 10) < 4])
+            weak_signal = len([n for n in network_data if not n.get('isDeadZone', False) and n.get('signalStrength', 10) < 4])
             good_coverage = total_points - dead_zones - weak_signal
             coverage_score = ((good_coverage / total_points) * 100) if total_points > 0 else 0
 
@@ -4249,31 +4364,53 @@ class HPCLDynamicPDFGenerator:
 
     def create_sharp_turns_detailed_pages(self, canvas_obj, route_data: Dict[str, Any]):
         """Create individual pages for each high-risk sharp turn with images"""
+
         collections = route_data['collections']
         route_id = str(route_data['route']['_id'])
-        all_sharp_turns = self.remove_duplicate_coordinates(collections['sharp_turns'])
-        
-        # Filter high-risk sharp turns (risk score >= 7)
+
+        all_sharp_turns = self.remove_duplicate_coordinates(collections.get('sharp_turns', []))
+        logger.info(f"Total sharp turns found after deduplication: {len(all_sharp_turns)}")
+
+        # Filter high-risk sharp turns (risk_Score >= 7)
         high_risk_turns = [
-            turn for turn in  all_sharp_turns
-            if turn.get('riskScore', 0) >= 7
+            turn for turn in all_sharp_turns
+            if turn.get('risk_Score', 0) >= 7
         ]
-        
-        if not high_risk_turns:
-            logger.info("No high-risk sharp turns found")
+
+        # Decide which turns to process
+        if high_risk_turns:
+            turns_to_process = high_risk_turns
+            logger.info(f"Using high-risk turns (count={len(turns_to_process)})")
+        else:
+            turns_to_process = all_sharp_turns
+            logger.info(f"No high-risk turns found. Using all turns (count={len(turns_to_process)})")
+
+        if not turns_to_process:
+            logger.info("No sharp turns available to process. Skipping page generation.")
             return
-        
-        # Sort by risk score (highest first)
-        high_risk_turns.sort(key=lambda x: x.get('riskScore', 0), reverse=True)
-        
+
+        # Sort by risk_Score descending
+        turns_to_process.sort(key=lambda x: x.get('risk_Score', 0), reverse=True)
+
+        # Decide how many to show
+        total_records = len(turns_to_process)
+        if total_records <= 10:
+            count_to_show = total_records
+            logger.info(f"Records <=10: Will display all {count_to_show} turns.")
+        else:
+            count_to_show = 10
+            logger.info("Records >10: Will display top 10 turns.")
+
         # Initialize image downloader if not already done
         if not hasattr(self, 'image_downloader'):
             self.initialize_image_downloader()
-        
-        # Create a page for each high-risk turn
-        for i, turn in enumerate(high_risk_turns[:10]):  # Limit to top 10
+
+        # Generate pages
+        for i, turn in enumerate(turns_to_process[:count_to_show]):
+            logger.info(f"Creating page {i + 1} for turn with risk_Score={turn.get('risk_Score', 'N/A')}")
             self.create_single_sharp_turn_page(canvas_obj, turn, i + 1, route_id, route_data)
-            if i < len(high_risk_turns) - 1:
+
+            if i < count_to_show - 1:
                 self.show_new_page(canvas_obj)
 
     def create_single_sharp_turn_page(self, canvas_obj, turn: Dict, turn_number: int, 
@@ -4282,7 +4419,7 @@ class HPCLDynamicPDFGenerator:
         
         # Page header
         risk_level = "CRITICAL" if turn.get('riskScore', 0) >= 8 else "HIGH"
-        subtitle = f"Sharp Turn #{turn_number} - Risk Score: {turn.get('riskScore', 0)}/10"
+        subtitle = f"Sharp Turn #{turn_number} - Risk Score: {turn.get('riskScore', 0)/2}/5"
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
         
         y_pos = self.page_height - 120
@@ -4334,7 +4471,7 @@ class HPCLDynamicPDFGenerator:
         # Add vertical spacing before details table
         y_pos -= 20
 
-        return y_pos  # Return updated y_pos for next elements
+        return y_pos  
 
     def create_details_table_with_gps_link(self, canvas_obj, data: list, start_x: int, start_y: float, col_widths: list) -> float:
         row_height = 20
@@ -4417,7 +4554,7 @@ class HPCLDynamicPDFGenerator:
             ["GPS Coordinates", f"{lat:.6f}, {lng:.6f} (view)"],
             ["Turn Angle", f"{turn.get('turnAngle', 0):.1f}° (Deviation from straight path)"],
             ["Risk Classification", self.get_turn_classification(turn)],
-            ["Risk Level", f"{turn.get('riskScore', 0)}/10 - {self.get_risk_category_text(turn.get('riskScore', 0))}"],
+            ["Risk Level", f"{turn.get('riskScore', 0/2)}/5 - {self.get_risk_category_text(turn.get('riskScore', 0))}"],
             ["Distance from Supply Location", f"{distance_from_start:.1f} km"],
             ["Turn Direction", turn.get('turnDirection', 'Unknown').title()],
             ["Turn Radius", f"{turn.get('turnRadius', 0):.1f} m" if turn.get('turnRadius') else "Not specified"],
@@ -4456,7 +4593,7 @@ class HPCLDynamicPDFGenerator:
             # No images available - show placeholder
             canvas_obj.setFillColor(self.colors.SECONDARY)
             canvas_obj.setFont("Helvetica", 10)
-            canvas_obj.drawString(20, y_pos, "Visual evidence not available - Google Maps API key required")
+            canvas_obj.drawString(20, y_pos, "Visual evidence not available -  Satellite View Not Available")
             return y_pos - 20
         
         # Image dimensions
@@ -4696,32 +4833,38 @@ class HPCLDynamicPDFGenerator:
 
     def create_blind_spots_detailed_pages(self, canvas_obj, route_data: Dict[str, Any]):
         """Create individual pages for each high-risk blind spot with images"""
+
         collections = route_data['collections']
         route_id = str(route_data['route']['_id'])
-        all_blind_sports = self.remove_duplicate_coordinates(collections['blind_spots'])
-        
+        all_blind_spots = self.remove_duplicate_coordinates(collections['blind_spots'])
+
         # Filter high-risk blind spots (risk score >= 7)
         high_risk_spots = [
-            spot for spot in all_blind_sports 
+            spot for spot in all_blind_spots 
             if spot.get('riskScore', 0) >= 7
         ]
-        
-        if not high_risk_spots:
-            logger.info("No high-risk blind spots found")
+
+        # ✅ If no high-risk spots, fallback to all spots
+        spots_to_process = high_risk_spots if high_risk_spots else all_blind_spots
+
+        if not spots_to_process:
+            logger.info("No blind spots found")
             return
-        
+
         # Sort by risk score (highest first)
-        high_risk_spots.sort(key=lambda x: x.get('riskScore', 0), reverse=True)
-        
+        spots_to_process.sort(key=lambda x: x.get('riskScore', 0), reverse=True)
+
         # Initialize image downloader if not already done
         if not hasattr(self, 'image_downloader'):
             self.initialize_image_downloader()
 
-        
-        # Create a page for each high-risk blind spot
-        for i, spot in enumerate(high_risk_spots[:10]):  # Limit to top 10
+        # Create a page for each blind spot (limit to top 10)
+        for i, spot in enumerate(spots_to_process[:10]):
             self.create_single_blind_spot_page(canvas_obj, spot, i + 1, route_id, route_data)
-            if i < len(high_risk_spots) - 1:
+
+            # Add new page unless it's the last one, or unless sharp turns exist
+            has_sharp_turns = bool(route_data['collections'].get('sharp_turns', []))
+            if i < len(spots_to_process[:10]) - 1 or has_sharp_turns:
                 self.show_new_page(canvas_obj)
 
     def create_single_blind_spot_page(self, canvas_obj, spot: Dict, spot_number: int, 
@@ -4794,7 +4937,7 @@ class HPCLDynamicPDFGenerator:
             ["GPS Coordinates", f"{spot.get('latitude', 0):.6f}, {spot.get('longitude', 0):.6f} (view)"],
             ["Spot Type", spot.get('spotType', 'Unknown').title()],
             ["Risk Classification", self.get_blind_spot_classification(spot)],
-            ["Risk Level", f"{spot.get('riskScore', 0)}/10 - {self.get_risk_category_text(spot.get('riskScore', 0))}"],
+            ["Risk Level", f"{spot.get('riskScore', 0)/2}/5 - {self.get_risk_category_text(spot.get('riskScore', 0))}"],
             ["Distance from Supply Location", f"{distance_from_start:.1f} km"],
             ["Visibility Distance", f"{spot.get('visibilityDistance', 0)} meters"],
             ["Visibility Category", self.get_visibility_category(spot.get('visibilityDistance', 0))],
@@ -4817,7 +4960,7 @@ class HPCLDynamicPDFGenerator:
 
     def add_blind_spot_visual_evidence(self, canvas_obj, spot: Dict, spot_number: int, 
                                     images: Dict[str, str], y_pos: float) -> float:
-        """Add visual evidence section for blind spots (potentially multiple angles)"""
+        """Add visual evidence section for blind spots (single street view + satellite)"""
         # Section header
         canvas_obj.setFillColor(self.colors.INFO)
         canvas_obj.setFont("Helvetica-Bold", 11)
@@ -4825,71 +4968,67 @@ class HPCLDynamicPDFGenerator:
         y_pos -= 15
         
         # Check if we have images
-        available_images = []
+        # Get the first available street view image (prioritize heading 0)
+        street_view_path = None
         for heading in [0, 90, 180, 270]:
             street_view_key = f'street_view_{heading}'
             if street_view_key in images and images[street_view_key]:
-                available_images.append((heading, images[street_view_key]))
+                street_view_path = images[street_view_key]
+                break
+        
+        # Also check for simple 'street_view' key
+        if not street_view_path and 'street_view' in images:
+            street_view_path = images['street_view']
         
         satellite_path = images.get('satellite')
         
-        if not available_images and not satellite_path:
+        if not street_view_path and not satellite_path:
             # No images available - show placeholder
             canvas_obj.setFillColor(self.colors.SECONDARY)
             canvas_obj.setFont("Helvetica", 10)
-            canvas_obj.drawString(20, y_pos, "Visual evidence not available - Google Maps API key required")
+            canvas_obj.drawString(20, y_pos, "Visual evidence not available -Satellite View Not Available")
             return y_pos - 20
         
-        # For blind spots, we might show 4 directional views + satellite
-        # Layout: 2x2 grid for street views on left, satellite on right
+        # Image dimensions (larger since we're showing only one street view)
+        img_width = 270
+        img_height = 200
         
-        if available_images:
-            # Draw street view images in a 2x2 grid on the left
-            canvas_obj.setFillColor(self.colors.PRIMARY)
-            canvas_obj.setFont("Helvetica-Bold", 10)
-            canvas_obj.drawString(20, y_pos, "MULTI-ANGLE STREET VIEW ANALYSIS:")
-            y_pos -= 10
-            
-            # Small image dimensions for 2x2 grid
-            small_img_width = 130
-            small_img_height = 95
-            
-            # Draw up to 4 street view images
-            positions = [
-                (20, y_pos - small_img_height),      # Top-left (North)
-                (160, y_pos - small_img_height),     # Top-right (East)
-                (20, y_pos - 2*small_img_height - 10),   # Bottom-left (South)
-                (160, y_pos - 2*small_img_height - 10)   # Bottom-right (West)
-            ]
-            
-            directions = ['N', 'E', 'S', 'W']
-            
-            for i, (heading, img_path) in enumerate(available_images[:4]):
-                if i < len(positions):
-                    x, y = positions[i]
-                    if os.path.exists(img_path):
-                        try:
-                            canvas_obj.drawImage(img_path, x, y, width=small_img_width, height=small_img_height)
-                            # Add direction label
-                            canvas_obj.setFillColor(self.colors.WHITE)
-                            canvas_obj.setFont("Helvetica-Bold", 10)
-                            canvas_obj.drawString(x + 5, y + small_img_height - 15, directions[i])
-                        except:
-                            self.draw_image_placeholder(canvas_obj, x, y, small_img_width, small_img_height, f"View {directions[i]}")
+        # Street view analysis (left side)
+        canvas_obj.setFillColor(self.colors.PRIMARY)
+        canvas_obj.setFont("Helvetica-Bold", 10)
+        canvas_obj.drawString(20, y_pos, "STREET VIEW ANALYSIS:")
         
-        # Satellite view on the right side
-        if satellite_path and os.path.exists(satellite_path):
-            canvas_obj.setFillColor(self.colors.PRIMARY)
-            canvas_obj.setFont("Helvetica-Bold", 10)
-            canvas_obj.drawString(305, y_pos, "SATELLITE VIEW ANALYSIS:")
-            y_pos -= 10
-            
+        # Satellite view analysis (right side)
+        canvas_obj.drawString(305, y_pos, "SATELLITE VIEW ANALYSIS:")
+        y_pos -= 10
+        
+        # Draw street view image (single image on the left)
+        if street_view_path and os.path.exists(street_view_path):
             try:
-                canvas_obj.drawImage(satellite_path, 305, y_pos - 200, width=270, height=200)
+                canvas_obj.drawImage(street_view_path, 20, y_pos - img_height, 
+                                width=img_width, height=img_height)
             except:
-                self.draw_image_placeholder(canvas_obj, 305, y_pos - 200, 270, 200, "Satellite View")
+                self.draw_image_placeholder(canvas_obj, 20, y_pos - img_height, 
+                                        img_width, img_height, "Street View")
+        else:
+            # Draw placeholder for street view
+            self.draw_image_placeholder(canvas_obj, 20, y_pos - img_height, 
+                                    img_width, img_height, "Street View Not Available")
         
-        y_pos -= 210  # Account for the height of images
+        # Draw satellite view image (on the right)
+        if satellite_path and os.path.exists(satellite_path):
+            try:
+                canvas_obj.drawImage(satellite_path, 305, y_pos - img_height, 
+                                width=img_width, height=img_height)
+            except:
+                self.draw_image_placeholder(canvas_obj, 305, y_pos - img_height, 
+                                        img_width, img_height, "Satellite View")
+        else:
+            # Draw placeholder for satellite view
+            self.draw_image_placeholder(canvas_obj, 305, y_pos - img_height, 
+                                    img_width, img_height, "Satellite View Not Available")
+        
+        y_pos -= img_height + 10
         
         # Add analysis text
         y_pos = self.add_blind_spot_analysis_text(canvas_obj, spot, images, y_pos)
@@ -4902,33 +5041,46 @@ class HPCLDynamicPDFGenerator:
         canvas_obj.setFont("Helvetica", 8)
         canvas_obj.setFillColor(self.colors.SECONDARY)
         
-        # Multi-angle analysis summary
-        analysis_text = [
-            "BLIND SPOT ANALYSIS SUMMARY:",
-            f"Type: {spot.get('spotType', 'Unknown').title()}",
-            f"Visibility: {spot.get('visibilityDistance', 0)}m in all directions",
-            f"Risk Score: {spot.get('riskScore', 0)}/10",
+        # Street view analysis (left column)
+        street_analysis = [
+            "STREET VIEW DATA:",
+            f"GPS: {spot.get('latitude', 0):.4f}, {spot.get('longitude', 0):.4f}",
+            f"Spot Type: {spot.get('spotType', 'Unknown').title()}",
             "",
-            "COVERAGE ANALYSIS:",
-            f"• North View: {'Available' if 'street_view_0' in images else 'Not available'}",
-            f"• East View: {'Available' if 'street_view_90' in images else 'Not available'}",
-            f"• South View: {'Available' if 'street_view_180' in images else 'Not available'}",
-            f"• West View: {'Available' if 'street_view_270' in images else 'Not available'}",
-            f"• Aerial View: {'Available' if 'satellite' in images else 'Not available'}",
-            "",
-            "HAZARD ASSESSMENT:",
-            f"• {'Critical hazard - extreme caution required' if spot.get('riskScore', 0) >= 8 else 'High risk area - proceed with caution'}",
-            f"• {'No warning signs present - extra vigilance needed' if not spot.get('warningSignsPresent') else 'Warning signs installed'}",
-            f"• {'No safety mirrors - limited visibility' if not spot.get('mirrorInstalled') else 'Safety mirrors available'}"
+            "VISIBILITY ANALYSIS:",
+            f"* Visibility distance: {spot.get('visibilityDistance', 0)}m",
+            f"* Risk score: {spot.get('riskScore', 0)/2}/5",
+            f"* Obstruction: {spot.get('spotType', 'Unknown')}",
+            f"* Warning signs: {'Yes' if spot.get('warningSignsPresent') else 'No'}"
         ]
         
         x_pos = 20
-        for line in analysis_text:
+        for line in street_analysis:
+            canvas_obj.drawString(x_pos, y_pos, line)
+            y_pos -= 10
+        
+        # Reset y position for right column
+        y_pos += len(street_analysis) * 10
+        
+        # Satellite view analysis (right column)
+        satellite_analysis = [
+            "SATELLITE VIEW DATA:",
+            f"GPS: {spot.get('latitude', 0):.4f}, {spot.get('longitude', 0):.4f}",
+            f"Coverage: Aerial perspective",
+            "",
+            "AERIAL ANALYSIS:",
+            f"* Road geometry visible from above",
+            f"* Surrounding terrain context",
+            f"* Obstruction type: {spot.get('spotType', 'Unknown')}",
+            f"* Infrastructure assessment complete"
+        ]
+        
+        x_pos = 305
+        for line in satellite_analysis:
             canvas_obj.drawString(x_pos, y_pos, line)
             y_pos -= 10
         
         return y_pos - 10
-
     def add_blind_spot_safety_recommendations(self, canvas_obj, spot: Dict, y_pos: float):
         """Add safety recommendations for blind spots"""
         if y_pos < 150:
@@ -5791,7 +5943,7 @@ class HPCLDynamicPDFGenerator:
         disclaimer_width = canvas_obj.stringWidth(disclaimer, "Helvetica-Oblique", 8)
         canvas_obj.drawString((self.page_width - disclaimer_width) / 2, 60, disclaimer)
 
-    # SHARP TURNS ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk (Risk Score: 4)
+    
     def create_sharp_turns_analysis_page(self, canvas_obj, route_data):
         """Create Page 6: Sharp Turns Analysis with dual visual evidence"""
 
@@ -5859,19 +6011,22 @@ class HPCLDynamicPDFGenerator:
         ]
 
         headers = ["Parameter", "Value "]
-        col_widths = [250, 250]
+        col_widths = [250, 260]
 
+        sharp_turns_score = round(min(10, len([t for t in collections['sharp_turns'] if t.get('riskScore', 0) >= 6]) * 0.4 + 1) / 2, 2)
+        risk_level = self.calculate_risk_level(sharp_turns_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            "SHARP TURNS ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk (Risk Score: 4)",
+            f"SHARP TURNS ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk (Risk Score: {sharp_turns_score:.1f})",
             headers,
             sharp_turn_analysis_data,
             self.margin, y_pos,
             col_widths,
-            title_color=self.colors.DANGER,
+            title_color=self.get_risk_color(risk_level.lower()),
             text_color=self.colors.WHITE,
             header_color=self.colors.WHITE,
-            max_rows_per_page=15
+            max_rows_per_page=15,
+            title_font_size = 11
         )
 
         y_pos -= 40
@@ -5906,25 +6061,35 @@ class HPCLDynamicPDFGenerator:
         )
 
         if sharp_turns:
-            headers = ["Location(GPS)","Link", "Turn Angle", "Direction", "Risk Level", "Severity"]
-            col_widths = [110,60, 80, 70, 70, 80]
+            headers = ["Location(GPS)", "Link", "Turn Angle", "Direction", "Risk Level", "Severity"]
+            col_widths = [110, 60, 80, 70, 70, 80]
+
+            # Filter turns with high risk score
+            high_risk_turns = []
+            for spot in sharp_turns:
+                if spot.get('riskScore', 0) >= 8:
+                    high_risk_turns.append(spot)
+
+            # Use high risk turns if available, otherwise use all
+            turns_to_display = high_risk_turns if high_risk_turns else sharp_turns
 
             sharp_data = []
-            for spot in sharp_turns:
+            for spot in turns_to_display:
                 risk_score = spot.get('riskScore', 0)
-                if risk_score >= 8:
-                    risk_level = "Critical" 
-                    latitude = spot.get('latitude',0)
-                    longitude = spot.get('longitude',0)
-                    map_link = f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                    sharp_data.append([
-                        f"{latitude:.5f}, {longitude:.5f}",
-                        map_link,
-                        spot.get('turnAngle', 0),
-                        spot.get('turnDirection', "Unknown"),
-                        risk_level,
-                        spot.get("turnSeverity")
-                    ])
+                risk_level = "Critical" if risk_score >= 8 else "Moderate"
+                latitude = spot.get('latitude', 0)
+                longitude = spot.get('longitude', 0)
+                map_link = f"https://www.google.com/maps?q={latitude:.5f}%2C{longitude:.5f}"
+                
+                sharp_data.append([
+                    f"{latitude:.5f}, {longitude:.5f}",
+                    map_link,
+                    spot.get('turnAngle', 0),
+                    spot.get('turnDirection', "Unknown"),
+                    risk_level,
+                    spot.get("turnSeverity")
+                ])
+
             
             if sharp_data:
                 y_pos -= 40
@@ -5946,6 +6111,7 @@ class HPCLDynamicPDFGenerator:
                 hyper_link_col_index=1
                 
             )
+    
     def generate_route_pdf(self, route_id: str) -> str:
         """Generate PDF for a route"""
         try:
@@ -5989,6 +6155,7 @@ class HPCLDynamicPDFGenerator:
             return default
         except (TypeError, ValueError):
             return default
+    
     def safe_int(self, value, default=0):
         """Safely convert value to int"""
         if value is None:
@@ -6006,6 +6173,7 @@ class HPCLDynamicPDFGenerator:
             return default
         except (TypeError, ValueError):
             return default
+    
     def safe_int_conversion(self, value: Any, default: int = 0) -> int:
         """Safely convert value to int"""
         if value is None:
@@ -6032,6 +6200,7 @@ class HPCLDynamicPDFGenerator:
         num1 = self.safe_float(value1, 0.0)
         num2 = self.safe_float(value2, 0.0)
         return num1, num2
+    
     def create_blind_spots_analysis_page(self, canvas_obj, route_data):   
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
         y_pos = self.page_height - 120
@@ -6076,16 +6245,18 @@ class HPCLDynamicPDFGenerator:
         ]
 
         headers = ["Parameter", "Value"]
-        col_widths = [250, 250]
+        col_widths = [250, 255]
 
+        blind_spots_score = round(min(10, len([b for b in collections['blind_spots'] if b.get('riskScore', 0) >= 6]) * 0.5 + 1) / 2, 2)
+        risk_level = self.calculate_risk_level(blind_spots_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            "BLIND SPOTS ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk (Risk Score: 4)",
+            f"BLIND SPOTS ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk (Risk Score: {blind_spots_score:.1f})",
             headers,
             blind_spot_analysis_data,
             self.margin, y_pos,
             col_widths,
-            title_color=self.colors.DANGER,
+            title_color=self.get_risk_color(risk_level.lower()),
             text_color=self.colors.WHITE,
             max_rows_per_page=15
         )
@@ -6129,27 +6300,47 @@ class HPCLDynamicPDFGenerator:
             self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
             y_pos = self.page_height - 120
 
-        if blind_spots:
-            headers = ["Location (GPS)","Link", "Type", "Visibility (m)", "Risk Level", "Action Required"]
-            col_widths = [110,60, 60, 70, 60, 130]
+            if blind_spots:
+                headers = ["Location (GPS)", "Link", "Type", "Visibility (m)", "Risk Level", "Action Required"]
+                col_widths = [110, 60, 60, 70, 60, 130]
 
-            blind_data = []
-            for spot in blind_spots:
-                risk_score = spot.get('riskScore', 0)
-                if risk_score >= 8:
-                    risk_level = "Critical" 
-                    latitude = spot.get('latitude',0)
-                    longitude = spot.get('longitude',0)
-                    map_link = f"https://www.google.com/maps?q={latitude}%2C{longitude}"
-                    blind_data.append([
-                        f"{latitude:.5f}, {longitude:.5f}",
-                        map_link,
-                        spot.get('spotType', 'Unknown').title(),
-                        str(spot.get('visibilityDistance', 0)),
-                        risk_level,
-                        "Use horn, stay alert"
-                    ])
-            
+                blind_data = []
+                
+                # Check if any spot has risk score >= 8
+                has_critical_risk = any(spot.get('riskScore', 0) >= 8 for spot in blind_spots)
+                
+                for spot in blind_spots:
+                    risk_score = spot.get('riskScore', 0)
+                    
+                    # Only filter if there are critical risks, otherwise include all
+                    if not has_critical_risk or risk_score >= 8:
+                        risk_level = (
+                            "Critical" if risk_score >= 8 else
+                            "High" if risk_score >= 5 else
+                            "Medium" if risk_score >= 3 else
+                            "Low"
+                        )
+                        
+                        latitude = spot.get('latitude', 0)
+                        longitude = spot.get('longitude', 0)
+                        map_link = f"https://www.google.com/maps?q={latitude}%2C{longitude}"
+                        
+                        action_required = (
+                            "Use horn, stay alert" if risk_score >= 8 else
+                            "Reduce speed" if risk_score >= 5 else
+                            "Be cautious" if risk_score >= 3 else
+                            "Monitor"
+                        )
+                        
+                        blind_data.append([
+                            f"{latitude:.5f}, {longitude:.5f}",
+                            map_link,
+                            spot.get('spotType', 'Unknown').title(),
+                            str(spot.get('visibilityDistance', 0)),
+                            risk_level,
+                            action_required
+                        ])
+                        
             # This will automatically handle pagination
             y_pos = self.create_simple_table_with_link(
                 canvas_obj,
@@ -6238,14 +6429,16 @@ class HPCLDynamicPDFGenerator:
             ["Analysis Confidence", confidence]
         ]
         dual_col_width = [250, 260]
+        accident_score = round(min(10, len(collections['accident_areas']) * 0.3 + 1) / 2, 2)
+        risk_level = self.calculate_risk_level(accident_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            "ACCIDENT PRONE TURNS ZONES ANALYSIS WITH DUAL VISUAL EVIDENCE (Risk score: 5)",
+            f"ACCIDENT PRONE TURNS ZONES ANALYSIS WITH DUAL VISUAL EVIDENCE (Risk score: {accident_score:.1f})",
             dual_visual_headers,
             dual_visual_data,
             50, y_pos, dual_col_width,
             text_color=self.colors.WHITE,
-            title_color=self.colors.DANGER,
+            title_color = self.get_risk_color(risk_level.lower()),
             header_color=self.colors.WHITE,
             title_font_size = 10
         )
@@ -6461,9 +6654,40 @@ class HPCLDynamicPDFGenerator:
             title_color=self.colors.DANGER
         )
 
+    def calculate_weather_seasons_temp(self, route_data):
+        """Calculate average temperature and temperature range per season."""
+        weather_conditions = route_data['collections'].get("weather_conditions", [])
+
+        season_groups = defaultdict(list)
+
+        for entry in weather_conditions:
+            season = entry.get("season", "").lower()
+            temp = entry.get("averageTemperature", 0)
+            if season and temp is not None:
+                season_groups[season].append(temp)
+
+        # Calculate stats
+        season_stats = {}
+        for season in ["summer", "winter", "monsoon", "autumn"]:
+            temps = season_groups.get(season, [])
+            if temps:
+                avg_temp = round(statistics.mean(temps), 2)
+                temp_range = (min(temps), max(temps))
+            else:
+                avg_temp = None
+                temp_range = (None, None)
+
+            season_stats[season] = {
+                "avg_temp": avg_temp,
+                "temp_range": temp_range
+            }
+
+        return season_stats
+
     def create_weather_analysis_page(self, canvas_obj, route_data: Dict[str, Any]):
         """Create page for comprehensive weather analysis."""
-        # Page Header
+
+        collections = route_data['collections']
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis) ")
         y_pos = self.page_height - 100
 
@@ -6477,9 +6701,21 @@ class HPCLDynamicPDFGenerator:
         ]
         weather_col_widths = [130, 95, 95, 95, 95]
 
+        season_stats = self.calculate_weather_seasons_temp(route_data)
+        summer_avg_temp = season_stats["summer"]["avg_temp"]
+        monsoon_avg_temp = season_stats["monsoon"]["avg_temp"]
+        winter_avg_temp = season_stats["winter"]["avg_temp"]
+        autumn_avg_temp = season_stats["autumn"]["avg_temp"]
+
         weather_data = [
-            ["Average Temperature", "38°C", "31°C", "28°C", "12°C"],
-            ["Temperature Range", "35°C – 45°C", "28°C – 35°C", "25°C – 32°C", "5°C – 20°C (Night: 0°C -2°C)"],
+            ["Average Temperature", f"{summer_avg_temp}°C" , f"{monsoon_avg_temp}°C", f"{autumn_avg_temp}°C", f"{winter_avg_temp}°C"],
+            [
+                "Temperature Range", 
+                f"{season_stats['summer']['temp_range'][0]}°C – {season_stats['summer']['temp_range'][1]}°C", 
+                f"{season_stats['monsoon']['temp_range'][0]}°C – {season_stats['monsoon']['temp_range'][1]}°C", 
+                f"{season_stats['autumn']['temp_range'][0]}°C – {season_stats['autumn']['temp_range'][1]}°C",
+                f"{season_stats['winter']['temp_range'][0]}°C – {season_stats['winter']['temp_range'][1]}°C"
+            ],
             ["Weather Conditions were detected.",
             "Hot, dry, dust storms,\noccasional thunderstorms",
             "Heavy rainfall,\nthunderstorms, fog",
@@ -6492,28 +6728,24 @@ class HPCLDynamicPDFGenerator:
             "Icy roads, black ice, frost,\nbattery failure, poor visibility due to fog"]
         ]
 
+        weather_score = round(min(10, len([w for w in collections['weather_conditions'] if w.get('riskScore', 0) >= 6]) * 0.4 + 2) / 2, 2)
+        risk_level = self.calculate_risk_level(weather_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            "COMPREHENSIVE WEATHER CONDITIONS ANALYSIS  Mild Risk (Risk Score: 3)",
+            f"COMPREHENSIVE WEATHER CONDITIONS ANALYSIS  Mild Risk (Risk Score: {weather_score:.1f})",
             weather_headers,
             weather_data,
             start_x=50,
             start_y=y_pos,
             col_widths=weather_col_widths,
-            title_color=self.colors.ACCENT,
+            title_color= self.get_risk_color(risk_level.lower()),
             text_color=self.colors.WHITE,
             header_color=self.colors.WHITE,
-
-            max_rows_per_page=25
+            max_rows_per_page=25,
+            title_font_size=10
         )
 
         y_pos -= 30
-
-         # Add only the SEASONAL WEATHER VARIATIONS header at the top
-        # canvas_obj.setFont("Helvetica-Bold", 12)
-        # canvas_obj.setFillColor(self.colors.WHITE)  # Assuming you want white color for the header
-        # canvas_obj.drawString(50, y_pos, "SEASONAL WEATHER VARIATIONS ACROSS THE ROUTE")
-        # y_pos -= 30
 
         # Seasonal Variations Table
         seasonal_headers = ["Season", "Major Risks", "Key Driver Actions", "Key Vehicle Checks"]
@@ -6578,7 +6810,7 @@ class HPCLDynamicPDFGenerator:
                 box_color=self.colors.WARNING)
 
             # Vehicle & Route Compliance Details Table
-            vehicle_headers = ["", ""]
+            vehicle_headers = ["Perameters", "Value"]
             vehicle_col_widths = [200, 280]
 
             route = route_data['route']
@@ -6659,18 +6891,21 @@ class HPCLDynamicPDFGenerator:
             ["Critical Condition Areas", str(len(critical_conditions))],
             ["High Risk Areas ", str(len(high_risk_areas))],
             ["Medium Risk Areas ", str(len(medium_risk_areas))],
-            ["API Sources Used ",f"{data_sources}"],
             ["Analysis Confidence ", "Medium" if len(road_conditions) < 50 else "High"]
         ]
 
+
         dual_col_width = [250, 260]
+
+        road_quality_score = round(min(10, len(road_conditions) * 0.3 + 1) / 2, 2)
+        risk_level = self.calculate_risk_level(road_quality_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            "COMPREHENSIVE ROAD QUALITY & SURFACE CONDITIONS(Risk Score :4)",
+            f"COMPREHENSIVE ROAD QUALITY & SURFACE CONDITIONS(Risk Score :{road_quality_score:.1f})",
             headers,
             road_conditions_data,
             50, y_pos, dual_col_width,
-            title_color=self.colors.DANGER,
+            title_color=self.get_risk_color(risk_level.lower()),
             header_color=self.colors.WHITE,
         )
 
@@ -6746,6 +6981,7 @@ class HPCLDynamicPDFGenerator:
             canvas_obj.drawString(70, y_pos, "• " + recommendation)
             
         return y_pos
+    
     def safe_float(self, value, default=0.0):
         """Safely convert value to float, handling various input types"""
         if value is None:
@@ -6766,6 +7002,7 @@ class HPCLDynamicPDFGenerator:
             return default
         except (TypeError, ValueError):
             return default
+    
     def generate_pdf_report(self, route_id: str, output_path: str = None) -> str:
         """Main method to generate complete PDF report with comprehensive risk zones"""
         try:
@@ -6833,6 +7070,7 @@ class HPCLDynamicPDFGenerator:
             logger.info("📄 Generating Law Enforcement ,Fire ServicesFire, educational, fuel and food")
             self.create_law_enforcement_page(pdf_canvas, route_data)
             self.show_new_page(pdf_canvas)
+
             
             # Page: GENERAL ENVIRONMENTAL & LOCAL DRIVING GUIDELINES FOR PETROLEUM TANKER DRIVERS
             logger.info("📄 GENERAL ENVIRONMENTAL & LOCAL DRIVING GUIDELINES FOR PETROLEUM TANKER DRIVERS (static content)")
