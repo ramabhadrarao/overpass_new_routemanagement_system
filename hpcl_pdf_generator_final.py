@@ -12,7 +12,7 @@ import math
 import io
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 import requests
@@ -1222,11 +1222,9 @@ class HPCLDynamicPDFGenerator:
             return self.generate_overpass_route_map(route_data)
     
     def create_route_map_page(self, canvas_obj, route_data: Dict[str, Any]):
-        """Create Page 3: Route Map using Overpass API or alternative mapping solutions"""
+        """Create Page 3: Route Map using static map with all markers"""
         self.add_page_header(canvas_obj, "HPCL - Journey Risk Management Study (AI-Powered Analysis)")
-        collections = route_data['collections']
-        route = route_data['route']
-
+        
         y_pos = self.page_height - 120
         
         canvas_obj.setFillColor(self.colors.PRIMARY)
@@ -1238,27 +1236,21 @@ class HPCLDynamicPDFGenerator:
         canvas_obj.setFont("Helvetica", 10)
         canvas_obj.drawString(self.margin, y_pos, "Comprehensive route visualization showing start/end points, critical turns, emergency services,")
         y_pos -= 20
-        canvas_obj.drawString(self.margin, y_pos, " highway junctions, and potential hazards.")
+        canvas_obj.drawString(self.margin, y_pos, "highway junctions, and potential hazards.")
         y_pos -= 20
         
         try:
-            # Try multiple map generation methods in order of preference
             map_image_path = None
             interactive_link = None
             
-            # Method 1: Try using staticmap library (simplest, no API needed)
-            logger.info("Attempting to generate map using staticmap library...")
-            map_image_path, interactive_link = self.generate_static_map_image(route_data)
+            # Try the new static map method with all markers
+            logger.info("Generating static map with all legend markers...")
+            map_image_path, interactive_link = self.generate_static_map_with_all_markers(route_data)
             
-            # Method 2: If staticmap fails, try matplotlib with OSM tiles
+            # If static map fails, try other methods
             if not map_image_path or not os.path.exists(map_image_path):
-                logger.info("Staticmap failed, trying matplotlib approach...")
+                logger.info("Static map failed, trying matplotlib approach...")
                 map_image_path, interactive_link = self.generate_matplotlib_osm_map(route_data)
-            
-            # Method 3: If still no map, use the existing Overpass implementation
-            if not map_image_path or not os.path.exists(map_image_path):
-                logger.info("Trying Overpass API approach...")
-                map_image_path, interactive_link = self.generate_overpass_route_map(route_data)
             
             # Display the map if we have one
             if map_image_path and os.path.exists(map_image_path):
@@ -1269,29 +1261,21 @@ class HPCLDynamicPDFGenerator:
                 # Add route statistics overlay
                 self.add_route_statistics_overlay(canvas_obj, route_data, y_pos - 370)
                 
-                # # Add interactive link box
-                # if interactive_link:
-                #     self.add_osm_link_box(canvas_obj, interactive_link, y_pos - 380)
-                
                 y_pos -= 390
             else:
                 logger.warning("All map generation methods failed, using placeholder")
-                # Fallback to placeholder
                 self.draw_map_placeholder(canvas_obj, route_data, y_pos)
                 y_pos -= 280
                 
         except Exception as e:
             logger.error(f"Failed to generate map: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            # Fallback to placeholder
             self.draw_map_placeholder(canvas_obj, route_data, y_pos)
             y_pos -= 280
         
         y_pos -= 35
         # Enhanced Map legend with actual counts
         self.add_enhanced_map_legend(canvas_obj, route_data, y_pos)
-    
+
     def generate_static_map_image(self, route_data: Dict[str, Any]) -> tuple:
         """Generate a static map image using staticmap library (no API key needed)"""
         try:
@@ -2278,7 +2262,7 @@ class HPCLDynamicPDFGenerator:
         risk_level = self.calculate_risk_level(traffic_score)
         y_pos = self.create_simple_table(
             canvas_obj=canvas_obj,
-            title= f"COMPREHENSIVE ELEVATION & TERRAIN ANALYSIS - LOW RISK (Risk Score: {traffic_score:.1f})",
+            title= f"COMPREHENSIVE ELEVATION & TERRAIN ANALYSIS - {risk_level.capitalize()} Risk (Risk Score: {traffic_score:.1f})",
             headers=headers,
             data=elevation_data,
             start_x=50,
@@ -2287,7 +2271,7 @@ class HPCLDynamicPDFGenerator:
             title_color=self.get_risk_color(risk_level.lower()),
             header_color=self.colors.WHITE,
             text_color=self.colors.WHITE,
-            title_font_size=11
+            title_font_size=10
         )
 
         y_pos -= 30
@@ -2480,13 +2464,14 @@ class HPCLDynamicPDFGenerator:
         risk_level = self.calculate_risk_level(emergency_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            f"COMPREHENSIVE TRAFFIC ANALYSIS LOW RISK (Risk Score: {emergency_score:.1f})",
+            f"COMPREHENSIVE TRAFFIC ANALYSIS - {risk_level.capitalize()} Risk (Risk Score: {emergency_score:.1f})",
             traffic_headers,
             traffic_data,50, y_pos,
             [250, 250],
             title_color= self.get_risk_color(risk_level.lower()),
             text_color=self.colors.WHITE,
-            header_color=self.colors.WHITE
+            header_color=self.colors.WHITE,
+            title_font_size=12
         )
 
         y_pos -= 20
@@ -4091,7 +4076,7 @@ class HPCLDynamicPDFGenerator:
             risk_level = self.calculate_network_level(coverage_score)
             y_pos = self.create_simple_table(
                 canvas_obj,
-                f"COMPREHENSIVE NETWORK COVERAGE ANALYSIS - {coverage_score:.1f} Coverage",
+                f"COMPREHENSIVE NETWORK COVERAGE ANALYSIS - {coverage_score:.1f} {risk_level.capitalize()} Coverage",
                 coverage_headers,
                 coverage_data,
                 50, y_pos,
@@ -4099,7 +4084,8 @@ class HPCLDynamicPDFGenerator:
                 title_color=self.get_network_color(risk_level.lower()),
                 text_color=self.colors.WHITE,
                 header_color=self.colors.WHITE,
-                max_rows_per_page=10
+                max_rows_per_page=10,
+                title_font_size= 11
             )
 
             # Add Signal Quality Distribution table from the image
@@ -4271,13 +4257,14 @@ class HPCLDynamicPDFGenerator:
 
         emergency_score = round(max(1, 10 - len(collections['emergency_services']) * 0.1) / 2, 2)
         risk_level = self.calculate_risk_level(emergency_score)
-        head_title = f"COMPREHENSIVE EMERGENCY PREPAREDNESS: LOW RISK (Risk Score: {emergency_score})"
+        head_title = f"COMPREHENSIVE EMERGENCY PREPAREDNESS - {risk_level.capitalize()} Risk (Risk Score: {emergency_score})"
         y_pos = self.draw_centered_text_in_box(
             canvas_obj,
             head_title,
             50, y_pos, 500, 35,
             box_color=self.get_risk_color(risk_level.lower()),
             text_color=self.colors.WHITE,
+            font_size=10
             )
         
 
@@ -5330,8 +5317,7 @@ class HPCLDynamicPDFGenerator:
             ["Air Quality Risk Areas", str(air_quality_count)],
             ["Weather Hazard Zones", str(weather_hazards)],
             ["Seasonal Risk Areas", str(seasonal_risks_count)],
-            ["Primary Risk Level", primary_risk_level],
-            ["API Sources Used", "Open Weather, Visual Crossing, Tomorrow.io, Google Places"]
+            ["Primary Risk Level", primary_risk_level]
         ]
         
         y_pos = self.create_simple_table(
@@ -5705,7 +5691,7 @@ class HPCLDynamicPDFGenerator:
         return description
 
     def translate_to_english(self, text: str) -> str:
-        """Translate text to English if needed"""
+        """Translate text to English if needed with proper error handling"""
         if not text or not isinstance(text, str):
             return str(text) if text else ""
         
@@ -5721,14 +5707,33 @@ class HPCLDynamicPDFGenerator:
             return text
         
         try:
-            # Try to translate
-            if self.translator:
-                detected = self.translator.detect(text)
-                if detected.lang != 'en' and detected.confidence > 0.5:
-                    translated = self.translator.translate(text, dest='en')
-                    return translated.text
+            # Try to translate with retry logic
+            max_retries = 3
+            for retry in range(max_retries):
+                try:
+                    result = self.translator.translate(text, dest='en')
+                    if result and hasattr(result, 'text') and result.text:
+                        return result.text
+                except Exception as e:
+                    if retry < max_retries - 1:
+                        # Try reinitializing translator with a different service URL
+                        try:
+                            service_urls = [
+                                'translate.google.ac',
+                                'translate.google.ad', 
+                                'translate.google.ae',
+                                'translate.google.com',
+                                'translate.google.co.in'
+                            ]
+                            # Use a different URL for each retry
+                            self.translator = Translator(service_urls=[service_urls[retry % len(service_urls)]])
+                            time.sleep(0.5)  # Brief pause before retry
+                        except:
+                            pass
+                    else:
+                        logger.warning(f"Translation failed after {max_retries} attempts for: '{text[:50]}...'")
         except Exception as e:
-            logger.warning(f"Translation skipped for '{text}': {str(e)}")
+            logger.warning(f"Translation error: {str(e)[:100]}")
         
         return text
 
@@ -6017,7 +6022,7 @@ class HPCLDynamicPDFGenerator:
         risk_level = self.calculate_risk_level(sharp_turns_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            f"SHARP TURNS ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk (Risk Score: {sharp_turns_score:.1f})",
+            f"SHARP TURNS ANALYSIS WITH DUAL VISUAL EVIDENCE - {risk_level.capitalize()} Risk (Risk Score: {sharp_turns_score:.1f})",
             headers,
             sharp_turn_analysis_data,
             self.margin, y_pos,
@@ -6026,7 +6031,7 @@ class HPCLDynamicPDFGenerator:
             text_color=self.colors.WHITE,
             header_color=self.colors.WHITE,
             max_rows_per_page=15,
-            title_font_size = 11
+            title_font_size = 10
         )
 
         y_pos -= 40
@@ -6251,14 +6256,15 @@ class HPCLDynamicPDFGenerator:
         risk_level = self.calculate_risk_level(blind_spots_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            f"BLIND SPOTS ANALYSIS WITH DUAL VISUAL EVIDENCE High Risk (Risk Score: {blind_spots_score:.1f})",
+            f"BLIND SPOTS ANALYSIS WITH DUAL VISUAL EVIDENCE  - {risk_level.capitalize()} Risk (Risk Score: {blind_spots_score:.1f})",
             headers,
             blind_spot_analysis_data,
             self.margin, y_pos,
             col_widths,
             title_color=self.get_risk_color(risk_level.lower()),
             text_color=self.colors.WHITE,
-            max_rows_per_page=15
+            max_rows_per_page=15,
+            title_font_size=11
         )
 
         # BLIND SPOT CLASSIFICATION SYSTEM
@@ -6732,7 +6738,7 @@ class HPCLDynamicPDFGenerator:
         risk_level = self.calculate_risk_level(weather_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            f"COMPREHENSIVE WEATHER CONDITIONS ANALYSIS  Mild Risk (Risk Score: {weather_score:.1f})",
+            f"COMPREHENSIVE WEATHER CONDITIONS ANALYSIS - {risk_level.capitalize()} Risk (Risk Score: {weather_score:.1f})",
             weather_headers,
             weather_data,
             start_x=50,
@@ -6901,12 +6907,13 @@ class HPCLDynamicPDFGenerator:
         risk_level = self.calculate_risk_level(road_quality_score)
         y_pos = self.create_simple_table(
             canvas_obj,
-            f"COMPREHENSIVE ROAD QUALITY & SURFACE CONDITIONS(Risk Score :{road_quality_score:.1f})",
+            f"COMPREHENSIVE ROAD QUALITY & SURFACE CONDITIONS - {risk_level.capitalize()} Risk (Risk Score :{road_quality_score:.1f})",
             headers,
             road_conditions_data,
             50, y_pos, dual_col_width,
             title_color=self.get_risk_color(risk_level.lower()),
             header_color=self.colors.WHITE,
+            title_font_size=10
         )
 
         # Detailed table
@@ -7003,6 +7010,233 @@ class HPCLDynamicPDFGenerator:
         except (TypeError, ValueError):
             return default
     
+
+    def generate_static_map_with_all_markers(self, route_data: Dict[str, Any]) -> tuple:
+        """Generate a static map using staticmap library with ALL legend markers"""
+        try:
+            from staticmap import StaticMap, CircleMarker, Line
+            from PIL import Image, ImageDraw, ImageFont
+            import io
+            
+            route = route_data['route']
+            collections = route_data['collections']
+            route_points = route.get('routePoints', [])
+            
+            if not route_points:
+                logger.error("No route points found")
+                return None, None
+            
+            # Create static map instance with larger size
+            m = StaticMap(1200, 900, padding_x=50, padding_y=50)
+            
+            # Extract coordinates for route line
+            coordinates = [(p['longitude'], p['latitude']) for p in route_points]
+            
+            # Add route line (blue)
+            route_line = Line(coordinates, '#0000FF', 4)
+            m.add_line(route_line)
+            
+            # ===== A - START POINT (Green) =====
+            start_marker = CircleMarker(
+                (route_points[0]['longitude'], route_points[0]['latitude']), 
+                '#00FF00', 18
+            )
+            m.add_marker(start_marker)
+            
+            # ===== B - END POINT (Red) =====
+            end_marker = CircleMarker(
+                (route_points[-1]['longitude'], route_points[-1]['latitude']), 
+                '#FF0000', 18
+            )
+            m.add_marker(end_marker)
+            
+            # ===== T# - SHARP TURNS (Orange) =====
+            sharp_turns = collections.get('sharp_turns', [])
+            turn_count = 0
+            for turn in sorted(sharp_turns, key=lambda x: x.get('riskScore', 0), reverse=True)[:8]:
+                if turn.get('riskScore', 0) >= 7:
+                    lat = self.safe_float(turn.get('latitude', 0))
+                    lon = self.safe_float(turn.get('longitude', 0))
+                    if lat and lon:
+                        marker = CircleMarker((lon, lat), '#FFA500', 12)
+                        m.add_marker(marker)
+                        turn_count += 1
+            
+            # ===== H - HOSPITALS (Blue) =====
+            emergency_services = collections.get('emergency_services', [])
+            hospitals = [s for s in emergency_services if s.get('serviceType') == 'hospital']
+            for hospital in hospitals[:6]:
+                lat = self.safe_float(hospital.get('latitude', 0))
+                lon = self.safe_float(hospital.get('longitude', 0))
+                if lat and lon:
+                    marker = CircleMarker((lon, lat), '#0000FF', 10)
+                    m.add_marker(marker)
+            
+            # ===== P - POLICE STATIONS (Purple) =====
+            police_stations = [s for s in emergency_services if s.get('serviceType') == 'police']
+            for station in police_stations[:6]:
+                lat = self.safe_float(station.get('latitude', 0))
+                lon = self.safe_float(station.get('longitude', 0))
+                if lat and lon:
+                    marker = CircleMarker((lon, lat), '#800080', 10)
+                    m.add_marker(marker)
+            
+            # ===== F - FIRE STATIONS (Dark Red) =====
+            fire_stations = [s for s in emergency_services if s.get('serviceType') == 'fire_station']
+            for station in fire_stations[:4]:
+                lat = self.safe_float(station.get('latitude', 0))
+                lon = self.safe_float(station.get('longitude', 0))
+                if lat and lon:
+                    marker = CircleMarker((lon, lat), '#8B0000', 10)
+                    m.add_marker(marker)
+            
+            # ===== G - GAS STATIONS (Yellow) =====
+            fuel_stations = [s for s in emergency_services if s.get('serviceType') == 'mechanic']
+            gas_count = 0
+            for station in fuel_stations:
+                name = (station.get('name') or '').lower()
+                if 'hp' in name or 'hindustan' in name or 'petroleum' in name:
+                    lat = self.safe_float(station.get('latitude', 0))
+                    lon = self.safe_float(station.get('longitude', 0))
+                    if lat and lon and gas_count < 6:
+                        marker = CircleMarker((lon, lat), '#FFFF00', 10)
+                        m.add_marker(marker)
+                        gas_count += 1
+            
+            # ===== S - SCHOOLS (Light Green) =====
+            schools = [s for s in emergency_services if s.get('serviceType') == 'educational']
+            for school in schools[:4]:
+                lat = self.safe_float(school.get('latitude', 0))
+                lon = self.safe_float(school.get('longitude', 0))
+                if lat and lon:
+                    marker = CircleMarker((lon, lat), '#90EE90', 10)
+                    m.add_marker(marker)
+            
+            # ===== * - HIGHWAY JUNCTIONS (Gold) =====
+            # Add 3 junction markers along the route
+            if len(route_points) > 4:
+                junction_indices = [len(route_points)//4, len(route_points)//2, 3*len(route_points)//4]
+                for idx in junction_indices:
+                    if 0 <= idx < len(route_points):
+                        point = route_points[idx]
+                        marker = CircleMarker((point['longitude'], point['latitude']), '#FFD700', 14)
+                        m.add_marker(marker)
+            
+            # Render the base map
+            image = m.render()
+            
+            # Now add labels to the markers using PIL
+            draw = ImageDraw.Draw(image)
+            
+            # Try to use a font, fallback to default if not available
+            try:
+                font = ImageFont.truetype("arial.ttf", 16)
+                small_font = ImageFont.truetype("arial.ttf", 12)
+            except:
+                font = ImageFont.load_default()
+                small_font = font
+            
+            # Function to convert coordinates to pixel positions
+            def coord_to_pixel(lon, lat):
+                x, y = m._x_to_px(lon), m._y_to_px(lat)
+                return x, y
+            
+            # Add labels to markers
+            # A - Start
+            x, y = coord_to_pixel(route_points[0]['longitude'], route_points[0]['latitude'])
+            draw.text((x-5, y-8), 'A', fill='white', font=font)
+            
+            # B - End
+            x, y = coord_to_pixel(route_points[-1]['longitude'], route_points[-1]['latitude'])
+            draw.text((x-5, y-8), 'B', fill='white', font=font)
+            
+            # T# - Sharp turns
+            turn_num = 1
+            for turn in sorted(sharp_turns, key=lambda x: x.get('riskScore', 0), reverse=True)[:8]:
+                if turn.get('riskScore', 0) >= 7:
+                    lat = self.safe_float(turn.get('latitude', 0))
+                    lon = self.safe_float(turn.get('longitude', 0))
+                    if lat and lon:
+                        x, y = coord_to_pixel(lon, lat)
+                        draw.text((x-10, y-8), f'T{turn_num}', fill='black', font=small_font)
+                        turn_num += 1
+            
+            # H - Hospitals
+            hosp_num = 1
+            for hospital in hospitals[:6]:
+                lat = self.safe_float(hospital.get('latitude', 0))
+                lon = self.safe_float(hospital.get('longitude', 0))
+                if lat and lon:
+                    x, y = coord_to_pixel(lon, lat)
+                    draw.text((x-8, y-8), f'H{hosp_num}', fill='white', font=small_font)
+                    hosp_num += 1
+            
+            # P - Police
+            police_num = 1
+            for station in police_stations[:6]:
+                lat = self.safe_float(station.get('latitude', 0))
+                lon = self.safe_float(station.get('longitude', 0))
+                if lat and lon:
+                    x, y = coord_to_pixel(lon, lat)
+                    draw.text((x-8, y-8), f'P{police_num}', fill='white', font=small_font)
+                    police_num += 1
+            
+            # Add title and legend on the image
+            title = f"Route: {route.get('fromAddress', 'Start')} to {route.get('toAddress', 'End')}"
+            draw.text((10, 10), title, fill='black', font=font)
+            
+            # Add legend box
+            legend_y = 50
+            legend_items = [
+                ('A - Start Point', 'green'),
+                ('B - End Point', 'red'),
+                ('T# - Sharp Turns', 'orange'),
+                ('H - Hospitals', 'blue'),
+                ('P - Police', 'purple'),
+                ('F - Fire Stations', 'darkred'),
+                ('G - Gas Stations', 'yellow'),
+                ('S - Schools', 'lightgreen'),
+                ('* - Junctions', 'gold')
+            ]
+            
+            # Draw legend background
+            draw.rectangle([10, legend_y, 200, legend_y + len(legend_items) * 20 + 10], 
+                        fill='white', outline='black')
+            
+            for i, (label, color) in enumerate(legend_items):
+                y_pos = legend_y + 5 + i * 20
+                # Draw color circle
+                draw.ellipse([15, y_pos, 25, y_pos + 10], fill=color, outline='black')
+                # Draw label
+                draw.text((30, y_pos - 2), label, fill='black', font=small_font)
+            
+            # Save the image
+            map_filename = f"route_map_static_{route['_id']}.png"
+            map_path = os.path.join(tempfile.gettempdir(), map_filename)
+            image.save(map_path)
+            
+            logger.info(f"Static map with all markers saved: {map_path}")
+            
+            # Generate OSM link
+            center_lat = sum(p['latitude'] for p in route_points) / len(route_points)
+            center_lon = sum(p['longitude'] for p in route_points) / len(route_points)
+            osm_link = f"https://www.openstreetmap.org/#map=12/{center_lat}/{center_lon}"
+            
+            return map_path, osm_link
+            
+        except ImportError as e:
+            logger.error(f"staticmap or PIL library not installed: {e}")
+            logger.error("Install with: pip install staticmap pillow")
+            return None, None
+        except Exception as e:
+            logger.error(f"Error generating static map: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None, None
+
+
+
+
     def generate_pdf_report(self, route_id: str, output_path: str = None) -> str:
         """Main method to generate complete PDF report with comprehensive risk zones"""
         try:
