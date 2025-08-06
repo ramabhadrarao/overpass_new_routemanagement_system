@@ -20,8 +20,9 @@ class Config:
     
     # File Upload
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/uploads')
-    ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls'}
-    MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 16 * 1024 * 1024))
+    ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls', 'zip'}
+    MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 500 * 1024 * 1024))
+
     
     # PDF
     PDF_OUTPUT_FOLDER = os.getenv('PDF_OUTPUT_FOLDER', 'static/pdfs')
